@@ -14,9 +14,10 @@ for (const platform of ['darwin', 'win32', 'linux']) test(`desktop lifecycle and
   class Window extends EventEmitter {
     static getAllWindows() { return windows.filter(w => !w.closed); }
     static fromWebContents(webContents) { return windows.find(w => w.webContents === webContents) || null; }
-    constructor(options) { super(); this.options = options; this.webContents = new EventEmitter(); this.webContents.reload = () => { this.reloads = (this.reloads || 0) + 1; }; this.webContents.send = () => {}; this.webContents.isLoading = () => false; this.webContents.setWindowOpenHandler = handler => { this.open = handler; }; windows.push(this); }
+    constructor(options) { super(); this.options = options; this.bounds = { x: options.x || 0, y: options.y || 0, width: options.width || 0, height: options.height || 0 }; this.webContents = new EventEmitter(); this.webContents.reload = () => { this.reloads = (this.reloads || 0) + 1; }; this.webContents.send = () => {}; this.webContents.isLoading = () => false; this.webContents.setWindowOpenHandler = handler => { this.open = handler; }; windows.push(this); }
     async loadURL(url) { this.loadedUrl = url; this.emit('ready-to-show'); }
-    getBounds() { return { x: 0, y: 0, width: 1280, height: 840 }; }
+    getBounds() { return this.bounds; }
+    setBounds(bounds) { this.bounds = { ...this.bounds, ...bounds }; this.boundsSet = bounds; this.emit('resize'); }
     isMinimized() { return false; }
     restore() {}
     isVisible() { return this.visible !== false; }
@@ -35,7 +36,7 @@ for (const platform of ['darwin', 'win32', 'linux']) test(`desktop lifecycle and
   let starts = 0;
   let lastMenuTemplate = [];
   let openedUrl = null;
-  const context = { console, process: { platform, env: {} }, __dirname: '/repo/src/electron',
+  const context = { console, process: { platform, env: {} }, __dirname: '/repo/src/electron', setTimeout,
     require(name) {
       if (name === 'electron') return { app, BrowserWindow: Window,
         ipcMain: {
@@ -102,15 +103,22 @@ for (const platform of ['darwin', 'win32', 'linux']) test(`desktop lifecycle and
   assert.equal(mini.options.alwaysOnTop, true);
   assert.equal(mini.alwaysOnTop, true);
   assert.equal(mini.alwaysOnTopLevel, 'floating');
-  assert.equal(mini.aspectRatio, 9 / 16);
+  assert.equal(mini.options.minWidth, 220);
+  assert.equal(mini.options.minHeight, 124);
   assert.equal(mini.contentProtection, true);
   assert.ok(mini.options.webPreferences.preload.endsWith('/preload.js'));
   assert.match(mini.loadedUrl, /\/\?mini=1&series=123&title=/);
   assert.match(mini.loadedUrl, /&episode=3&position=12\.500$/);
   assert.equal(mini.shown, true);
-  const reused = await miniOpen({ sender }, { seriesId: '456' });
-  assert.equal(reused.ok, true);
-  assert.equal(reused.reused, true);
+  // 视频元数据就绪后窗口自动贴合画面真实宽高（横屏 16:9 → 320x180），不再固定 9:16。
+  const fitVideo = ipcListeners.get('mini:fit-video');
+  assert.ok(fitVideo);
+  fitVideo({ sender: mini.webContents }, { width: 1920, height: 1080 });
+  assert.equal(mini.bounds.width, 320);
+  assert.equal(mini.bounds.height, 180);
+  const reopened = await miniOpen({ sender }, { seriesId: '456' });
+  assert.equal(reopened.ok, true);
+  assert.equal(reopened.reused, true);
   assert.equal(windows.length, 3);
   const denied = await miniOpen({ sender: new EventEmitter() }, { seriesId: '456' });
   assert.equal(denied.ok, false);

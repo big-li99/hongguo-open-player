@@ -1812,6 +1812,13 @@ const app = createApp({
       togglePlay();
     }
 
+    function refitMiniWindow() {
+      const video = videoEl.value;
+      if (!video || !video.videoWidth || !video.videoHeight) return;
+      window.hongguoDesktop?.fitMiniToVideo?.(video.videoWidth, video.videoHeight, true);
+      showOSD('窗口已贴合画面比例');
+    }
+
     function handleMiniPlayRequest(payload) {
       if (!payload || !payload.seriesId) return;
       if (payload.seriesId === activeSeries.value?.series_id) {
@@ -1852,7 +1859,10 @@ const app = createApp({
       applyMiniWindowPreferences();
       if (typeof document !== 'undefined' && document.body?.classList) document.body.classList.add('mini-window');
       changedPreferences.add('danmakuEnabled');
+      changedPreferences.add('fitMode');
       danmakuEnabled.value = readLocalPreference('hongguo.mini.danmaku', '0') === '1';
+      // 小窗默认完整显示画面；窗口会按视频真实宽高自动贴合。
+      fitMode.value = 'contain';
       const seriesId = readBootParam('series');
       if (!seriesId) {
         notify('小窗未指定要播放的短剧');
@@ -1962,6 +1972,9 @@ const app = createApp({
             width: videoEl.value.videoWidth,
             height: videoEl.value.videoHeight
           };
+          if (isMiniMode) {
+            window.hongguoDesktop?.fitMiniToVideo?.(videoEl.value.videoWidth, videoEl.value.videoHeight);
+          }
         }
         videoEl.value.volume = Number(volume.value);
         videoEl.value.muted = isMuted.value;
@@ -2388,7 +2401,7 @@ const app = createApp({
       isFullscreen, isControlsHidden, resetControlsTimer, clearControlsTimer, setControlsHidden, handleWindowMouseMove,
       isMiniMode, miniPinned, miniProtection, miniOpacity, bossKeyHint,
       openMiniPlayer, closeMiniPlayer, hideMiniPlayer, returnToMainWindow,
-      toggleMiniProtection, cycleMiniOpacity, toggleMiniPin, cycleMiniSpeed, toggleMiniDanmaku, handleMiniVideoClick,
+      toggleMiniProtection, cycleMiniOpacity, toggleMiniPin, cycleMiniSpeed, toggleMiniDanmaku, handleMiniVideoClick, refitMiniWindow,
       previewSeek, seekFromSlider, startScrubbing, finishScrubbing,
       viewMode,
       currentTab,

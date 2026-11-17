@@ -3691,3 +3691,14 @@ html.mini-window .app-toast {
   text-align: center;
   border-radius: 8px;
 }
+
+@media (max-width: 300px) {
+  .mini-time,
+  .mini-ep-badge {
+    display: none;
+  }
+  .mini-text-btn {
+    min-width: 27px;
+    padding: 0 3px;
+  }
+}

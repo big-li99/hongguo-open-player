@@ -9,11 +9,18 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 const BOSS_KEY_ACCELERATOR = 'CommandOrControl+Alt+B';
 const BOSS_KEY_LABEL = process.platform === 'darwin' ? '⌘⌥B' : 'Ctrl+Alt+B';
+const MINI_DEFAULT_WIDTH = 320;
+const MINI_DEFAULT_HEIGHT = 568;
+const MINI_MIN_WIDTH = 220;
+const MINI_MIN_HEIGHT = 124;
 
 let mainWindow = null;
 let miniWindow = null;
 let appBaseUrl = '';
 let bossKeyRegistered = false;
+let miniFitApplied = false;
+let miniUserResized = false;
+let miniProgrammaticResize = 0;
 let serverInstance = null;
 let serverStart = null;
 let windowCreation = null;
@@ -139,7 +146,7 @@ function miniWindowBounds() {
     : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const area = display.workArea;
   const margin = 24;
-  let height = Math.min(568, area.height - margin * 2);
+  let height = Math.min(MINI_DEFAULT_HEIGHT, area.height - margin * 2);
   let width = Math.round(height * 9 / 16);
   if (width > area.width - margin * 2) {
     width = area.width - margin * 2;
@@ -163,6 +170,57 @@ function buildMiniUrl(payload = {}) {
   const position = Number(payload.positionSec);
   if (Number.isFinite(position) && position > 0) params.push(['position', position.toFixed(3)]);
   return `${appBaseUrl}/?${params.map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&')}`;
+}
+
+// 让迷你窗口贴合视频真实宽高，避免固定 9:16 带来的黑边。
+function resizeMiniToVideo(win, size = {}, force = false) {
+  const videoWidth = Number(size.width);
+  const videoHeight = Number(size.height);
+  if (!(videoWidth > 0 && videoHeight > 0)) return;
+  if (force) {
+    miniUserResized = false;
+    miniFitApplied = false;
+  }
+  if (miniUserResized) return;
+
+  const aspect = videoWidth / videoHeight;
+  const bounds = win.getBounds();
+  if (miniFitApplied && Math.abs(bounds.width / bounds.height - aspect) / aspect < 0.03) return;
+
+  const workArea = screen.getDisplayMatching(bounds).workArea;
+  const currentIsPortrait = bounds.height > bounds.width;
+  const videoIsPortrait = aspect < 1;
+  let width;
+  let height;
+  if (videoIsPortrait) {
+    height = currentIsPortrait ? bounds.height : MINI_DEFAULT_HEIGHT;
+    width = Math.round(height * aspect);
+  } else {
+    width = currentIsPortrait ? MINI_DEFAULT_WIDTH : bounds.width;
+    height = Math.round(width / aspect);
+  }
+  const maxWidth = Math.max(MINI_MIN_WIDTH, workArea.width - 48);
+  const maxHeight = Math.max(MINI_MIN_HEIGHT, workArea.height - 48);
+  if (width > maxWidth) {
+    width = maxWidth;
+    height = Math.round(width / aspect);
+  }
+  if (height > maxHeight) {
+    height = maxHeight;
+    width = Math.round(height * aspect);
+  }
+  width = Math.max(MINI_MIN_WIDTH, width);
+  height = Math.max(MINI_MIN_HEIGHT, height);
+
+  const right = bounds.x + bounds.width;
+  const bottom = bounds.y + bounds.height;
+  const x = Math.max(workArea.x + 12, Math.min(right - width, workArea.x + workArea.width - width - 12));
+  const y = Math.max(workArea.y + 12, Math.min(bottom - height, workArea.y + workArea.height - height - 12));
+
+  miniProgrammaticResize++;
+  win.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) });
+  setTimeout(() => { miniProgrammaticResize = Math.max(0, miniProgrammaticResize - 1); }, 250);
+  miniFitApplied = true;
 }
 
 function registerBossKey() {
@@ -216,8 +274,8 @@ function openMiniWindow(payload = {}) {
 
   const mini = new BrowserWindow({
     ...miniWindowBounds(),
-    minWidth: 240,
-    minHeight: 426,
+    minWidth: MINI_MIN_WIDTH,
+    minHeight: MINI_MIN_HEIGHT,
     frame: false,
     hasShadow: true,
     resizable: true,
@@ -240,11 +298,13 @@ function openMiniWindow(payload = {}) {
     }
   });
   miniWindow = mini;
+  miniFitApplied = false;
+  miniUserResized = false;
+  miniProgrammaticResize = 0;
   mini.setAlwaysOnTop(true, 'floating');
   if (process.platform === 'darwin' && typeof mini.setVisibleOnAllWorkspaces === 'function') {
     mini.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   }
-  if (typeof mini.setAspectRatio === 'function') mini.setAspectRatio(9 / 16);
   if (typeof payload.opacity === 'number' && typeof mini.setOpacity === 'function') {
     mini.setOpacity(Math.min(1, Math.max(0.3, payload.opacity)));
   }
@@ -261,7 +321,14 @@ function openMiniWindow(payload = {}) {
   };
   mini.webContents.on('will-navigate', guardNavigation);
   mini.webContents.on('will-redirect', guardNavigation);
-  mini.once('ready-to-show', () => mini.show());
+  mini.once('ready-to-show', () => {
+    mini.show();
+    // 用户手动缩放后不再自动贴合画面比例。
+    mini.on('resize', () => {
+      if (miniProgrammaticResize > 0) return;
+      miniUserResized = true;
+    });
+  });
   mini.on('closed', () => {
     if (miniWindow === mini) miniWindow = null;
     unregisterBossKey();
@@ -309,6 +376,11 @@ function registerMiniIpc() {
   });
 
   ipcMain.on('mini:hide', () => toggleMiniWindow(false));
+
+  ipcMain.on('mini:fit-video', (event, size) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && win === miniWindow) resizeMiniToVideo(win, size || {}, Boolean(size?.force));
+  });
 
   ipcMain.on('mini:always-on-top', (event, value) => {
     const win = BrowserWindow.fromWebContents(event.sender);

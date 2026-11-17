@@ -1689,6 +1689,7 @@ test('mini window boots straight into the requested series, episode and position
     setMiniAlwaysOnTop: value => hostCalls.push(['pin', value]),
     setMiniOpacity: value => hostCalls.push(['opacity', value]),
     setMiniProtection: value => hostCalls.push(['protect', value]),
+    fitMiniToVideo: (width, height, force) => hostCalls.push(['fit', width, height, Boolean(force)]),
     onMiniPlay: () => () => {},
     onMiniVisibility: () => () => {},
     onOpenDrama: () => () => {}
@@ -1738,6 +1739,8 @@ test('mini window boots straight into the requested series, episode and position
   };
   state.onLoadedMetadata();
   assert.equal(currentTime, 5);
+  assert.deepEqual(hostCalls.at(-1), ['fit', 1080, 1920, false]);
+  assert.equal(state.fitMode.value, 'contain');
   assert.ok(requests.some(url => url === '/api/series/1'));
 });
 

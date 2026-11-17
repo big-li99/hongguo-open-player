@@ -600,6 +600,7 @@
           <button class="mini-icon-btn" :class="{ active: miniProtection }" @click="toggleMiniProtection" :title="miniProtection ? '防录屏已开启：小窗不会出现在截图/录屏中' : '防录屏已关闭：点击开启'">🛡</button>
           <button class="mini-icon-btn" @click="cycleMiniOpacity" :title="'窗口不透明度：' + Math.round(miniOpacity * 100) + '%（点击切换）'">◐</button>
           <button class="mini-icon-btn" :class="{ active: miniPinned }" @click="toggleMiniPin" :title="miniPinned ? '窗口已置顶（点击取消）' : '窗口未置顶（点击置顶）'">📌</button>
+          <button class="mini-icon-btn" @click="refitMiniWindow" title="窗口贴合画面比例（消除黑边）">⤡</button>
           <button class="mini-icon-btn" @click="returnToMainWindow" title="返回主窗口继续播放">⤢</button>
           <button class="mini-icon-btn" @click="hideMiniPlayer" :title="'立即隐藏小窗（' + bossKeyHint + ' 可恢复）'">👁</button>
           <button class="mini-icon-btn close" @click="closeMiniPlayer" title="关闭小窗">✕</button>
@@ -677,6 +678,7 @@
           <button class="mini-ctrl-btn" @click="playNextEpisode" :disabled="activeEpisodeIndex >= activeEpisodes.length" title="下一集 (↓)">⏭</button>
           <span class="mini-time">{{ formatTime(currentTime) }} / {{ formatTime(duration) }}</span>
           <span class="mini-spacer"></span>
+          <button class="mini-ctrl-btn mini-text-btn" @click="toggleFitMode" :title="'画面比例：' + (fitMode === 'contain' ? '适应画面（完整显示）' : '铺满窗口（裁剪边缘）')">{{ fitMode === 'contain' ? '适应' : '铺满' }}</button>
           <button class="mini-ctrl-btn mini-text-btn" @click="cycleMiniSpeed" title="切换倍速">{{ playbackRate }}x</button>
           <button class="mini-ctrl-btn" @click="toggleMute" :title="isMuted ? '恢复声音 (M)' : '静音 (M)'">{{ isMuted ? '🔇' : '🔊' }}</button>
           <button class="mini-ctrl-btn mini-text-btn" :class="{ active: danmakuEnabled }" @click="toggleMiniDanmaku" title="弹幕开关">弹</button>
