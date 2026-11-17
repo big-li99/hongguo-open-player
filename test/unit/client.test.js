@@ -1677,3 +1677,97 @@ test('client falls back to hevc=0 when runtime onCanPlay reports 0x0 video dimen
   state.onCanPlay();
   assert.equal(playCalls, 1);
 });
+
+test('mini window boots straight into the requested series, episode and position', async () => {
+  const requests = [];
+  const hostCalls = [];
+  const host = {
+    openMiniPlayer: async () => ({ ok: true }),
+    closeMiniPlayer: async () => ({ ok: true }),
+    hideMiniPlayer() {},
+    returnToMainWindow: async () => ({ ok: true }),
+    setMiniAlwaysOnTop: value => hostCalls.push(['pin', value]),
+    setMiniOpacity: value => hostCalls.push(['opacity', value]),
+    setMiniProtection: value => hostCalls.push(['protect', value]),
+    onMiniPlay: () => () => {},
+    onMiniVisibility: () => () => {},
+    onOpenDrama: () => () => {}
+  };
+  const bodyClasses = [];
+  const state = client(url => {
+    requests.push(url);
+    if (url === '/api/preferences') return Promise.resolve(response({}));
+    if (url.startsWith('/api/series/1')) {
+      return Promise.resolve(response({
+        series_id: '1', series_title: '测试短剧', episodes: [{ vid: 'v1', vid_index: 1 }, { vid: 'v2', vid_index: 2 }],
+        saved_progress: { episode_index: 1, position_sec: 99 }
+      }));
+    }
+    return Promise.resolve(response({}));
+  }, {
+    location: { search: '?mini=1&series=1&episode=2&position=5' },
+    document: {
+      documentElement: { classList: { add() {} } },
+      body: { classList: { add: name => bodyClasses.push(name) } },
+      addEventListener() {},
+      removeEventListener() {}
+    },
+    window: {
+      addEventListener() {},
+      removeEventListener() {},
+      localStorage: { getItem: () => null, setItem() {} },
+      hongguoDesktop: host
+    }
+  });
+  assert.equal(state.isMiniMode, true);
+  state.mountForTest();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(bodyClasses.includes('mini-window'));
+  assert.equal(state.viewMode.value, 'theater');
+  assert.equal(state.activeSeries.value.series_id, '1');
+  assert.equal(state.activeEpisodeIndex.value, 2);
+  assert.equal(state.danmakuEnabled.value, false);
+  assert.deepEqual(hostCalls, [['protect', true], ['opacity', 1], ['pin', true]]);
+
+  let currentTime = 0;
+  state.videoEl.value = {
+    duration: 60, videoWidth: 1080, videoHeight: 1920, volume: 1, muted: false, playbackRate: 1,
+    get currentTime() { return currentTime; },
+    set currentTime(value) { currentTime = value; },
+    pause() {}, play: async () => {}
+  };
+  state.onLoadedMetadata();
+  assert.equal(currentTime, 5);
+  assert.ok(requests.some(url => url === '/api/series/1'));
+});
+
+test('mini handoff returns the desktop host from the mini window', async () => {
+  const calls = [];
+  const state = client(async () => response({}), {
+    location: { search: '?mini=1&series=9&episode=4&position=12' },
+    document: {
+      documentElement: { classList: { add() {} } },
+      body: { classList: { add() {} } },
+      addEventListener() {}, removeEventListener() {}
+    },
+    window: {
+      addEventListener() {}, removeEventListener() {},
+      localStorage: { getItem: () => null, setItem() {} },
+      hongguoDesktop: {
+        setMiniProtection() {}, setMiniOpacity() {}, setMiniAlwaysOnTop() {},
+        returnToMainWindow: payload => { calls.push(payload); return Promise.resolve({ ok: true }); },
+        closeMiniPlayer: () => Promise.resolve({ ok: true }),
+        onMiniPlay: () => () => {}, onMiniVisibility: () => () => {}
+      }
+    }
+  });
+  state.activeSeries.value = { series_id: '9', series_title: '小窗测试' };
+  state.activeEpisodes.value = [{ vid: 'v4', vid_index: 4 }];
+  state.activeEpisodeIndex.value = 4;
+  state.currentTime.value = 12.5;
+  await state.returnToMainWindow();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].seriesId, '9');
+  assert.equal(calls[0].episodeIndex, 4);
+  assert.equal(calls[0].positionSec, 12.5);
+});

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-const { app, BrowserWindow, Menu, shell, dialog } = require('electron');
+const { app, BrowserWindow, Menu, shell, dialog, ipcMain, globalShortcut, screen } = require('electron');
 const path = require('path');
 
 // 必须在 app.whenReady 之前注入 Chromium 硬件解码与 macOS VideoToolbox HEVC (H.265) 解码开关
@@ -7,7 +7,13 @@ app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport,Plat
 app.commandLine.appendSwitch('enable-accelerated-video-decode');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
+const BOSS_KEY_ACCELERATOR = 'CommandOrControl+Alt+B';
+const BOSS_KEY_LABEL = process.platform === 'darwin' ? '⌘⌥B' : 'Ctrl+Alt+B';
+
 let mainWindow = null;
+let miniWindow = null;
+let appBaseUrl = '';
+let bossKeyRegistered = false;
 let serverInstance = null;
 let serverStart = null;
 let windowCreation = null;
@@ -40,6 +46,7 @@ async function buildWindow() {
   const res = await serverStart;
   serverInstance = res.server;
   const port = res.port;
+  appBaseUrl = `http://127.0.0.1:${port}`;
 
   // 2. 创建原生跨平台桌面窗口 (macOS / Windows / Linux)
   const isMac = process.platform === 'darwin';
@@ -55,7 +62,9 @@ async function buildWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       webSecurity: true,
-      devTools: true
+      devTools: true,
+      backgroundThrottling: false,
+      preload: path.join(__dirname, 'preload.js')
     },
     show: false // 待内容准备完毕后再优雅显示，避免白屏
   };
@@ -76,7 +85,7 @@ async function buildWindow() {
 
   const window = new BrowserWindow(windowOptions);
   mainWindow = window;
-  const appUrl = `http://127.0.0.1:${port}`;
+  const appUrl = appBaseUrl;
   window.once('ready-to-show', () => window.show());
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url).catch(console.error);
@@ -121,6 +130,207 @@ async function buildWindow() {
 }
 
 const GITHUB_REPO_URL = 'https://github.com/zfdang/hongguo-open-player';
+
+// ==================== 摸鱼小窗 (置顶迷你播放器) ====================
+
+function miniWindowBounds() {
+  const display = mainWindow && !mainWindow.isDestroyed()
+    ? screen.getDisplayMatching(mainWindow.getBounds())
+    : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const area = display.workArea;
+  const margin = 24;
+  let height = Math.min(568, area.height - margin * 2);
+  let width = Math.round(height * 9 / 16);
+  if (width > area.width - margin * 2) {
+    width = area.width - margin * 2;
+    height = Math.round(width * 16 / 9);
+  }
+  return {
+    width,
+    height,
+    x: Math.round(area.x + area.width - width - margin),
+    y: Math.round(area.y + area.height - height - margin)
+  };
+}
+
+function buildMiniUrl(payload = {}) {
+  const params = [['mini', '1']];
+  const seriesId = String(payload.seriesId || '').trim();
+  if (seriesId) params.push(['series', seriesId]);
+  if (payload.seriesTitle) params.push(['title', String(payload.seriesTitle)]);
+  const episode = Number(payload.episodeIndex);
+  if (Number.isFinite(episode) && episode > 0) params.push(['episode', String(Math.floor(episode))]);
+  const position = Number(payload.positionSec);
+  if (Number.isFinite(position) && position > 0) params.push(['position', position.toFixed(3)]);
+  return `${appBaseUrl}/?${params.map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&')}`;
+}
+
+function registerBossKey() {
+  if (bossKeyRegistered) return;
+  try {
+    bossKeyRegistered = globalShortcut.register(BOSS_KEY_ACCELERATOR, () => toggleMiniWindow());
+  } catch (error) {
+    console.error('Boss key registration failed:', error);
+  }
+  if (!bossKeyRegistered) console.warn(`Global shortcut ${BOSS_KEY_ACCELERATOR} is unavailable`);
+}
+
+function unregisterBossKey() {
+  if (!bossKeyRegistered) return;
+  try {
+    globalShortcut.unregister(BOSS_KEY_ACCELERATOR);
+  } catch (_) {}
+  bossKeyRegistered = false;
+}
+
+// 老板键：隐藏时同时通知渲染进程暂停播放，避免只闻其声。
+function toggleMiniWindow(forceShow) {
+  if (!miniWindow || miniWindow.isDestroyed()) return false;
+  const shouldShow = typeof forceShow === 'boolean' ? forceShow : !miniWindow.isVisible();
+  if (shouldShow) {
+    miniWindow.webContents.send('mini:visibility', true);
+    miniWindow.show();
+    miniWindow.focus();
+  } else {
+    miniWindow.webContents.send('mini:visibility', false);
+    miniWindow.hide();
+  }
+  return shouldShow;
+}
+
+function notifyMainMiniState(active) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('main:mini-state', Boolean(active));
+  }
+}
+
+function openMiniWindow(payload = {}) {
+  if (!appBaseUrl) return { ok: false, error: '播放服务尚未就绪' };
+  if (miniWindow && !miniWindow.isDestroyed()) {
+    miniWindow.webContents.send('mini:play', payload);
+    if (!miniWindow.isVisible()) miniWindow.show();
+    miniWindow.focus();
+    notifyMainMiniState(true);
+    return { ok: true, reused: true };
+  }
+
+  const mini = new BrowserWindow({
+    ...miniWindowBounds(),
+    minWidth: 240,
+    minHeight: 426,
+    frame: false,
+    hasShadow: true,
+    resizable: true,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#000000',
+    title: '红果小窗',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true,
+      devTools: true,
+      backgroundThrottling: false,
+      preload: path.join(__dirname, 'preload.js')
+    }
+  });
+  miniWindow = mini;
+  mini.setAlwaysOnTop(true, 'floating');
+  if (process.platform === 'darwin' && typeof mini.setVisibleOnAllWorkspaces === 'function') {
+    mini.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
+  if (typeof mini.setAspectRatio === 'function') mini.setAspectRatio(9 / 16);
+  if (typeof payload.opacity === 'number' && typeof mini.setOpacity === 'function') {
+    mini.setOpacity(Math.min(1, Math.max(0.3, payload.opacity)));
+  }
+  if (typeof mini.setContentProtection === 'function') mini.setContentProtection(payload.protect !== false);
+
+  const appUrl = appBaseUrl;
+  mini.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/.test(url)) shell.openExternal(url).catch(console.error);
+    return { action: 'deny' };
+  });
+  const guardNavigation = (event, url) => {
+    try { if (new URL(url).origin === appUrl) return; } catch (_) {}
+    event.preventDefault();
+  };
+  mini.webContents.on('will-navigate', guardNavigation);
+  mini.webContents.on('will-redirect', guardNavigation);
+  mini.once('ready-to-show', () => mini.show());
+  mini.on('closed', () => {
+    if (miniWindow === mini) miniWindow = null;
+    unregisterBossKey();
+    notifyMainMiniState(false);
+  });
+  mini.loadURL(buildMiniUrl(payload)).catch(error => {
+    console.error('Mini window failed to load:', error);
+  });
+  registerBossKey();
+  notifyMainMiniState(true);
+  return { ok: true, reused: false };
+}
+
+function registerMiniIpc() {
+  ipcMain.handle('mini:open', (event, payload) => {
+    const fromKnownWindow = (mainWindow && event.sender === mainWindow.webContents) ||
+      (miniWindow && event.sender === miniWindow.webContents);
+    if (!fromKnownWindow) return { ok: false, error: '未授权的窗口' };
+    return openMiniWindow(payload || {});
+  });
+
+  ipcMain.handle('mini:close', () => {
+    if (miniWindow && !miniWindow.isDestroyed()) miniWindow.close();
+    return { ok: true };
+  });
+
+  ipcMain.handle('mini:return', async (_event, payload = {}) => {
+    try {
+      if (!mainWindow || mainWindow.isDestroyed()) await createWindow();
+      if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, error: '主窗口不可用' };
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      const send = () => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('main:open-drama', payload);
+      };
+      if (mainWindow.webContents.isLoading?.()) mainWindow.webContents.once('did-finish-load', send);
+      else send();
+      if (miniWindow && !miniWindow.isDestroyed()) miniWindow.close();
+      return { ok: true };
+    } catch (error) {
+      console.error('Return to main window failed:', error);
+      return { ok: false, error: '返回主窗口失败' };
+    }
+  });
+
+  ipcMain.on('mini:hide', () => toggleMiniWindow(false));
+
+  ipcMain.on('mini:always-on-top', (event, value) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && win === miniWindow) win.setAlwaysOnTop(Boolean(value), 'floating');
+  });
+
+  ipcMain.on('mini:opacity', (event, value) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win !== miniWindow || typeof win.setOpacity !== 'function') return;
+    const opacity = Number(value);
+    win.setOpacity(Number.isFinite(opacity) ? Math.min(1, Math.max(0.3, opacity)) : 1);
+  });
+
+  ipcMain.on('mini:protection', (event, value) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && win === miniWindow && typeof win.setContentProtection === 'function') {
+      win.setContentProtection(Boolean(value));
+    }
+  });
+}
+
+registerMiniIpc();
 
 function showAboutDialog() {
   const version = typeof app.getVersion === 'function' ? app.getVersion() : '1.0.0';
@@ -209,7 +419,20 @@ function setupMenu() {
         { role: 'zoomIn', label: '放大' },
         { role: 'zoomOut', label: '缩小' },
         { type: 'separator' },
-        { role: 'togglefullscreen', label: '切换全屏' }
+        { role: 'togglefullscreen', label: '切换全屏' },
+        { type: 'separator' },
+        {
+          label: '小窗播放当前剧集（摸鱼模式）',
+          click: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.executeJavaScript('window.__app?.openMiniPlayer?.()').catch(console.error);
+            }
+          }
+        },
+        {
+          label: `显示 / 隐藏小窗 (${BOSS_KEY_LABEL})`,
+          click: () => toggleMiniWindow()
+        }
       ]
     },
     {
@@ -320,6 +543,11 @@ if (!gotTheLock) {
     }
   });
 
+  app.on('will-quit', () => {
+    unregisterBossKey();
+    try { globalShortcut.unregisterAll(); } catch (_) {}
+  });
+
   let quitting = false;
   app.on('before-quit', event => {
     if (quitting || !serverInstance) return;
@@ -330,6 +558,12 @@ if (!gotTheLock) {
       mainWindow.destroy();
       mainWindow = null;
     }
+    if (miniWindow && !miniWindow.isDestroyed()) {
+      miniWindow.destroy();
+      miniWindow = null;
+    }
+    unregisterBossKey();
+    try { globalShortcut.unregisterAll(); } catch (_) {}
     require('../server/services/streamService').shutdown();
     serverInstance.close();
     serverInstance.closeAllConnections?.();

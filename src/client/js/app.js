@@ -1,10 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-only
 const { createApp, ref, computed, onMounted, onUnmounted, nextTick, watch } = Vue;
 
+// 摸鱼小窗模式：Electron 迷你窗口通过 ?mini=1 复用同一套播放内核与 Vue 逻辑。
+const bootSearch = typeof location !== 'undefined' && location && location.search ? String(location.search) : '';
+const isMiniMode = /(?:^|[?&])mini=1(?:&|$)/.test(bootSearch);
+function readBootParam(name) {
+  const match = new RegExp('[?&]' + name + '=([^&]*)').exec(bootSearch);
+  if (!match) return '';
+  try {
+    return decodeURIComponent(match[1].replace(/\+/g, ' '));
+  } catch (_) {
+    return match[1];
+  }
+}
+
 // 自动识别 macOS / Windows / Linux 宿主平台并注入 root class
 const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.userAgentData && navigator.userAgentData.platform === 'macOS');
 const isDesktop = /Electron\//.test(navigator.userAgent);
 document.documentElement.classList.add(isDesktop ? (isMac ? 'platform-mac' : /Windows/i.test(navigator.userAgent) ? 'platform-win' : 'platform-linux') : 'platform-browser');
+if (isMiniMode) document.documentElement.classList.add('mini-window');
 
 const app = createApp({
   setup() {
@@ -69,6 +83,30 @@ const app = createApp({
     const volume = ref(1.0);
     const isMuted = ref(false);
     const videoResolution = ref({ width: 0, height: 0 });
+
+    // ================= 摸鱼小窗 (Mini Player) =================
+    const miniPinned = ref(true);
+    const miniProtection = ref(readLocalPreference('hongguo.mini.protect', '1') !== '0');
+    const miniOpacity = ref(Number(readLocalPreference('hongguo.mini.opacity', '1')) || 1);
+    const bossKeyHint = isMac ? '⌘⌥B' : 'Ctrl+Alt+B';
+    const hostUnsubscribers = [];
+    let miniWasPlayingBeforeHide = false;
+    const miniWindowActive = ref(false);
+    let miniActiveToastAt = 0;
+    const MINI_OPACITIES = [1, 0.9, 0.75, 0.55, 0.35];
+    const MINI_SPEEDS = ['1.0', '1.25', '1.5', '2.0', '0.75'];
+
+    function readLocalPreference(key, fallback) {
+      try {
+        const raw = window.localStorage?.getItem(key);
+        return raw == null ? fallback : raw;
+      } catch (_) {
+        return fallback;
+      }
+    }
+    function writeLocalPreference(key, value) {
+      try { window.localStorage?.setItem(key, String(value)); } catch (_) {}
+    }
 
     const resolutionText = computed(() => {
       const w = videoResolution.value.width;
@@ -518,12 +556,12 @@ const app = createApp({
     function setControlsHidden(hidden) {
       isControlsHidden.value = hidden;
       if (typeof document !== 'undefined' && document.body?.classList) {
-        document.body.classList.toggle('hide-cursor', Boolean(hidden && isFullscreen.value));
+        document.body.classList.toggle('hide-cursor', Boolean(hidden && (isFullscreen.value || isMiniMode)));
       }
     }
 
     function handleWindowMouseMove() {
-      if (isFullscreen.value && isControlsHidden.value) {
+      if ((isFullscreen.value || isMiniMode) && isControlsHidden.value) {
         resetControlsTimer();
       }
     }
@@ -537,9 +575,9 @@ const app = createApp({
         setControlsHidden(false);
       }
       clearTimeout(controlsHideTimer);
-      if (isFullscreen.value && isPlaying.value && !isScrubbing.value) {
+      if ((isFullscreen.value || isMiniMode) && isPlaying.value && !isScrubbing.value) {
         controlsHideTimer = setTimeout(() => {
-          if (isFullscreen.value && isPlaying.value && !isScrubbing.value) {
+          if ((isFullscreen.value || isMiniMode) && isPlaying.value && !isScrubbing.value) {
             setControlsHidden(true);
           }
         }, 2500);
@@ -1426,7 +1464,7 @@ const app = createApp({
       if (navigator.mediaSession) { navigator.mediaSession.playbackState = 'none'; navigator.mediaSession.metadata = null; }
     }
 
-    async function openTheater(drama) {
+    async function openTheater(drama, options = {}) {
       const request = ++theaterRequest;
       videoErrorMessage.value = '';
       isBuffering.value = true;
@@ -1438,7 +1476,7 @@ const app = createApp({
           throw new Error(detail?.error || '获取该短剧分集失败，请重试');
         }
 
-        saveProgressNow();
+        if (!options.skipSave) saveProgressNow();
         if (videoEl.value) videoEl.value.pause();
         resetPlayback();
         catalogScrollTop = window.scrollY || 0;
@@ -1449,7 +1487,7 @@ const app = createApp({
           detail.tags = drama.tags;
         }
         activeSeries.value = detail;
-        fetchRelatedSeasons(detail);
+        if (!isMiniMode) fetchRelatedSeasons(detail);
         const watched = detail.saved_progress?.watched_indexes || [detail.saved_progress?.episode_index];
         watchedMap.value.set(detail.series_id, new Set(watched.filter(index => Number.isInteger(index) && index > 0)));
         activeEpisodes.value = detail.episodes;
@@ -1465,6 +1503,14 @@ const app = createApp({
         if (detail.saved_progress) {
           targetIndex = Number(detail.saved_progress.episode_index) || 1;
           resumeSec = Number(detail.saved_progress.position_sec) || 0;
+        }
+
+        // 小窗/返回主窗等场景可由调用方指定精确的集数与播放位置
+        const requestedIndex = Number(options.episodeIndex);
+        if (Number.isInteger(requestedIndex) && requestedIndex > 0 && detail.episodes.some(ep => ep.vid_index === requestedIndex)) {
+          targetIndex = requestedIndex;
+          const requestedPosition = Number(options.resumeSec);
+          resumeSec = Number.isFinite(requestedPosition) && requestedPosition > 0 ? requestedPosition : 0;
         }
 
         if (!detail.episodes.some(ep => ep.vid_index === targetIndex)) {
@@ -1630,6 +1676,195 @@ const app = createApp({
       keepPlayerFocus();
     }
 
+    // ================= 摸鱼小窗控制 (置顶迷你播放器) =================
+    function miniPayload() {
+      return {
+        seriesId: activeSeries.value?.series_id || '',
+        seriesTitle: activeSeries.value?.series_title || '',
+        episodeIndex: activeEpisodeIndex.value,
+        positionSec: Number(currentTime.value) || 0,
+        opacity: Number(miniOpacity.value) || 1,
+        protect: miniProtection.value
+      };
+    }
+
+    function applyMiniWindowPreferences() {
+      const host = window.hongguoDesktop;
+      if (!host) return;
+      host.setMiniProtection?.(miniProtection.value);
+      host.setMiniOpacity?.(Number(miniOpacity.value) || 1);
+      host.setMiniAlwaysOnTop?.(miniPinned.value);
+    }
+
+    async function openMiniPlayer() {
+      if (!activeSeries.value || !activeEpisodes.value.length) {
+        notify('请先打开一部短剧再使用小窗播放');
+        return;
+      }
+      const payload = miniPayload();
+      if (window.hongguoDesktop?.openMiniPlayer) {
+        saveProgressNow();
+        videoEl.value?.pause?.();
+        try {
+          const result = await window.hongguoDesktop.openMiniPlayer(payload);
+          if (result?.ok === false) {
+            notify(result.error || '小窗打开失败');
+          } else {
+            miniWindowActive.value = true;
+            notify(`已切换到置顶小窗 · ${bossKeyHint} 一键隐藏`);
+          }
+        } catch (err) {
+          console.error('小窗打开失败:', err);
+          notify('小窗打开失败：' + (err?.message || '未知错误'));
+        }
+      } else if (videoEl.value && typeof videoEl.value.requestPictureInPicture === 'function') {
+        try {
+          await videoEl.value.requestPictureInPicture();
+        } catch (err) {
+          console.error('画中画启动失败:', err);
+          notify('画中画启动失败：' + (err?.message || '当前环境不支持'));
+        }
+      } else {
+        notify('当前运行环境不支持小窗播放，请使用桌面版');
+      }
+      keepPlayerFocus();
+    }
+
+    function closeMiniPlayer() {
+      if (window.hongguoDesktop?.closeMiniPlayer) {
+        window.hongguoDesktop.closeMiniPlayer();
+        return;
+      }
+      if (typeof document !== 'undefined' && document.pictureInPictureElement) {
+        document.exitPictureInPicture().catch(() => {});
+      }
+    }
+
+    function hideMiniPlayer() {
+      miniWasPlayingBeforeHide = isPlaying.value;
+      saveProgressNow();
+      videoEl.value?.pause?.();
+      window.hongguoDesktop?.hideMiniPlayer?.();
+    }
+
+    async function returnToMainWindow() {
+      saveProgressNow();
+      videoEl.value?.pause?.();
+      if (!window.hongguoDesktop?.returnToMainWindow) {
+        closeMiniPlayer();
+        return;
+      }
+      try {
+        const result = await window.hongguoDesktop.returnToMainWindow(miniPayload());
+        if (result?.ok === false) notify(result.error || '返回主窗口失败');
+      } catch (err) {
+        console.error('返回主窗口失败:', err);
+        notify('返回主窗口失败');
+      }
+    }
+
+    function toggleMiniProtection() {
+      miniProtection.value = !miniProtection.value;
+      writeLocalPreference('hongguo.mini.protect', miniProtection.value ? '1' : '0');
+      window.hongguoDesktop?.setMiniProtection?.(miniProtection.value);
+      notify(miniProtection.value ? '防录屏已开启：小窗不会出现在截图或录屏中' : '防录屏已关闭');
+    }
+
+    function cycleMiniOpacity() {
+      const current = Number(miniOpacity.value) || 1;
+      const index = MINI_OPACITIES.findIndex(value => Math.abs(value - current) < 0.02);
+      miniOpacity.value = MINI_OPACITIES[(index + 1 + MINI_OPACITIES.length) % MINI_OPACITIES.length];
+      writeLocalPreference('hongguo.mini.opacity', miniOpacity.value);
+      window.hongguoDesktop?.setMiniOpacity?.(miniOpacity.value);
+      showOSD(`不透明度 ${Math.round(miniOpacity.value * 100)}%`);
+    }
+
+    function toggleMiniPin() {
+      miniPinned.value = !miniPinned.value;
+      window.hongguoDesktop?.setMiniAlwaysOnTop?.(miniPinned.value);
+      showOSD(miniPinned.value ? '小窗已置顶' : '已取消置顶');
+    }
+
+    function cycleMiniSpeed() {
+      const index = MINI_SPEEDS.indexOf(String(playbackRate.value));
+      const next = MINI_SPEEDS[(index + 1) % MINI_SPEEDS.length];
+      playbackRate.value = next;
+      savePreferences({ playbackRate: next });
+      if (videoEl.value) videoEl.value.playbackRate = Number(next);
+      showOSD(`${next}x 倍速`);
+    }
+
+    function toggleMiniDanmaku() {
+      danmakuEnabled.value = !danmakuEnabled.value;
+      writeLocalPreference('hongguo.mini.danmaku', danmakuEnabled.value ? '1' : '0');
+      if (danmakuEnabled.value) {
+        loadDanmaku(true);
+        nextTick(startDanmakuAnimation);
+      } else {
+        stopDanmakuAnimation();
+        danmakuRequest++;
+        danmakuKey = '';
+        danmakuItems.value = [];
+      }
+    }
+
+    function handleMiniVideoClick() {
+      togglePlay();
+    }
+
+    function handleMiniPlayRequest(payload) {
+      if (!payload || !payload.seriesId) return;
+      if (payload.seriesId === activeSeries.value?.series_id) {
+        const target = activeEpisodes.value.find(ep => ep.vid_index === Number(payload.episodeIndex));
+        const position = Number(payload.positionSec) || 0;
+        if (target && target.vid_index !== activeEpisodeIndex.value) {
+          if (position > 0) pendingResumeSec = position;
+          switchEpisode(target);
+        } else if (videoEl.value) {
+          if (position > 0) {
+            try { videoEl.value.currentTime = position; } catch (_) {}
+          }
+          videoEl.value.play().catch(() => {});
+        }
+      } else {
+        openTheater(
+          { series_id: payload.seriesId, series_title: payload.seriesTitle || '' },
+          { episodeIndex: payload.episodeIndex, resumeSec: payload.positionSec }
+        );
+      }
+    }
+
+    function handleMiniVisibility(visible) {
+      if (visible) {
+        setControlsHidden(false);
+        resetControlsTimer();
+        keepPlayerFocus();
+        if (miniWasPlayingBeforeHide) videoEl.value?.play?.().catch(() => {});
+        miniWasPlayingBeforeHide = false;
+        return;
+      }
+      miniWasPlayingBeforeHide = miniWasPlayingBeforeHide || isPlaying.value;
+      videoEl.value?.pause?.();
+      saveProgressNow();
+    }
+
+    async function initMiniPlayer() {
+      applyMiniWindowPreferences();
+      if (typeof document !== 'undefined' && document.body?.classList) document.body.classList.add('mini-window');
+      changedPreferences.add('danmakuEnabled');
+      danmakuEnabled.value = readLocalPreference('hongguo.mini.danmaku', '0') === '1';
+      const seriesId = readBootParam('series');
+      if (!seriesId) {
+        notify('小窗未指定要播放的短剧');
+        return;
+      }
+      await openTheater(
+        { series_id: seriesId, series_title: readBootParam('title') || '' },
+        { episodeIndex: Number(readBootParam('episode')) || 0, resumeSec: Number(readBootParam('position')) || 0 }
+      );
+      if (readBootParam('paused') === '1') videoEl.value?.pause?.();
+    }
+
     async function toggleFavCurrent() {
       if (!activeSeries.value) return;
       try {
@@ -1657,6 +1892,14 @@ const app = createApp({
 
     function onPlay(event) {
       if (event && event.target !== videoEl.value) return;
+      if (!isMiniMode && miniWindowActive.value) {
+        videoEl.value?.pause?.();
+        if (Date.now() - miniActiveToastAt > 5000) {
+          miniActiveToastAt = Date.now();
+          notify('小窗正在播放，请在小窗中点击 ⤢ 返回主窗口');
+        }
+        return;
+      }
       isPlaying.value = true;
       loadDanmaku();
       startDanmakuAnimation();
@@ -1711,6 +1954,7 @@ const app = createApp({
     function onLoadedMetadata(event) {
       if (event && event.target !== videoEl.value) return;
       if (videoEl.value) {
+        videoErrorMessage.value = '';
         progressReady = true;
         duration.value = videoEl.value.duration || 0;
         if (videoEl.value.videoWidth && videoEl.value.videoHeight) {
@@ -1777,6 +2021,8 @@ const app = createApp({
     async function onVideoError(e) {
       isBuffering.value = false;
       if (e?.target && e.target !== videoEl.value) return;
+      // 小窗初始渲染尚未确定剧集时 src 为空，忽略这类无效的媒体错误。
+      if (!currentStreamUrl.value && e?.target) return;
       if (bytevc2Session && bytevc2Fallback) { bytevc2Fallback(); return; }
       const code = videoEl.value?.error?.code;
       const message = videoEl.value?.error?.message || '';
@@ -2012,10 +2258,19 @@ const app = createApp({
           e.preventDefault();
           e.target?.blur?.();
           toggleFullscreen();
+        } else if (e.key?.toLowerCase() === 'p' && !isMiniMode) {
+          e.preventDefault();
+          e.target?.blur?.();
+          openMiniPlayer();
+        } else if (e.key?.toLowerCase() === 'h' && isMiniMode) {
+          e.preventDefault();
+          e.target?.blur?.();
+          hideMiniPlayer();
         } else if (e.code === 'Escape' || e.key === 'Escape') {
           if (document.fullscreenElement) { document.exitFullscreen().catch(console.error); return; }
           if (Date.now() - fullscreenExitAt < 300) return;
-          closeTheater();
+          if (isMiniMode) closeMiniPlayer();
+          else closeTheater();
         }
       }
     }
@@ -2055,10 +2310,14 @@ const app = createApp({
     }
 
     onMounted(() => {
-      fetchDeviceInfo();
+      if (!isMiniMode) fetchDeviceInfo();
       loadPreferences();
-      loadSearchHistory();
-      loadCatalog();
+      if (isMiniMode) {
+        initMiniPlayer().catch(err => notify('小窗初始化失败: ' + err.message));
+      } else {
+        loadSearchHistory();
+        loadCatalog();
+      }
       window.addEventListener('keydown', handleKeyDown);
       window.addEventListener('click', handleGlobalClick);
       window.addEventListener('mousemove', handleWindowMouseMove);
@@ -2066,6 +2325,29 @@ const app = createApp({
       document.addEventListener?.('focusin', handleGlobalFocusIn);
       window.addEventListener('pagehide', saveProgressNow);
       document.addEventListener?.('fullscreenchange', fullscreenChanged);
+
+      // 桌面宿主 IPC：小窗切换、老板键显隐、小窗返回主窗
+      if (window.hongguoDesktop) {
+        if (isMiniMode) {
+          hostUnsubscribers.push(window.hongguoDesktop.onMiniPlay?.(handleMiniPlayRequest));
+          hostUnsubscribers.push(window.hongguoDesktop.onMiniVisibility?.(handleMiniVisibility));
+        } else {
+          hostUnsubscribers.push(window.hongguoDesktop.onMiniState?.(active => {
+            miniWindowActive.value = Boolean(active);
+          }));
+          hostUnsubscribers.push(window.hongguoDesktop.onOpenDrama?.(payload => {
+            if (!payload?.seriesId) return;
+            miniWindowActive.value = false;
+            toastText.value = '';
+            clearTimeout(toastTimer);
+            openTheater(
+              { series_id: payload.seriesId, series_title: payload.seriesTitle || '' },
+              { episodeIndex: payload.episodeIndex, resumeSec: payload.positionSec, skipSave: true }
+            );
+          }));
+        }
+      }
+
       if (navigator.mediaSession) {
         const actions = { play: () => videoEl.value?.play(), pause: () => videoEl.value?.pause(), previoustrack: playPrevEpisode, nexttrack: playNextEpisode };
         for (const [name, handler] of Object.entries(actions)) {
@@ -2083,6 +2365,7 @@ const app = createApp({
     onUnmounted(() => {
       bytevc2Session?.stop();
       stopDanmakuAnimation();
+      hostUnsubscribers.splice(0).forEach(unsubscribe => { try { unsubscribe?.(); } catch (_) {} });
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('click', handleGlobalClick);
       window.removeEventListener('mousemove', handleWindowMouseMove);
@@ -2103,6 +2386,9 @@ const app = createApp({
       savePreferences, danmakuEnabled, showDanmakuSettings, danmakuRows, danmakuOpacity, danmakuSpeed, danmakuLikesPriority, toggleLikesPriority, prioritizeDanmakuItems, estimateDanmakuWidth, calculateRequiredGap, danmakuStatus, danmakuLayer, danmakuColor, toggleDanmaku, loadDanmaku,
       toastText, osdMessage, sidebarOpen, isScrubbing, previewTime, previewPercent, showPreview,
       isFullscreen, isControlsHidden, resetControlsTimer, clearControlsTimer, setControlsHidden, handleWindowMouseMove,
+      isMiniMode, miniPinned, miniProtection, miniOpacity, bossKeyHint,
+      openMiniPlayer, closeMiniPlayer, hideMiniPlayer, returnToMainWindow,
+      toggleMiniProtection, cycleMiniOpacity, toggleMiniPin, cycleMiniSpeed, toggleMiniDanmaku, handleMiniVideoClick,
       previewSeek, seekFromSlider, startScrubbing, finishScrubbing,
       viewMode,
       currentTab,

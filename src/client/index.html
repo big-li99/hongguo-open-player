@@ -11,7 +11,7 @@
 <body class="dark-theme">
   <div id="app">
     <!-- 顶部导航栏 -->
-    <header class="app-header">
+    <header v-if="!isMiniMode" class="app-header">
       <div class="header-left">
         <div class="brand" @click="goHome" title="返回首页">
           <img class="brand-icon" src="/assets/app-icon.png" alt="" width="28" height="28" aria-hidden="true">
@@ -75,6 +75,10 @@
               <span class="dropdown-icon">🔄</span>
               <span class="dropdown-label">{{ isResettingDevice ? '正在生成新设备...' : '生成新的设备ID' }}</span>
             </button>
+            <button class="dropdown-item" @click="showAppMenu = false; openMiniPlayer()">
+              <span class="dropdown-icon">🪟</span>
+              <span class="dropdown-label">小窗播放当前剧集</span>
+            </button>
             <button class="dropdown-item" @click="openShortcutsModal">
               <span class="dropdown-icon">⌨️</span>
               <span class="dropdown-label">快捷键指南</span>
@@ -102,7 +106,7 @@
     </header>
 
     <!-- 主体内容区域 -->
-    <main class="app-main" :inert="activeActor ? true : undefined" :aria-hidden="activeActor ? 'true' : undefined">
+    <main v-if="!isMiniMode" class="app-main" :inert="activeActor ? true : undefined" :aria-hidden="activeActor ? 'true' : undefined">
       <!-- 快捷搜索推荐标签 -->
       <section v-if="viewMode === 'catalog' && currentTab !== 'history' && currentTab !== 'favorites' && currentTab !== 'actors'" class="chips-bar">
         <span class="chips-label">热门搜索：</span>
@@ -416,7 +420,13 @@
                   <button class="ctrl-btn volume-btn" @click="toggleMute">{{ isMuted ? '🔇' : '🔊' }}</button>
                   <input type="range" min="0" max="1" step="0.05" v-model="volume" @input="changeVolume" @change="savePreferences({ volume: Number(volume), isMuted })" class="volume-slider"/>
                 </div>
-                <!-- 全屏 -->
+                <!-- 小窗与全屏 -->
+                <button class="ctrl-btn mini-window-btn" @click="openMiniPlayer" title="小窗播放 · 摸鱼模式 (P)" aria-label="小窗播放">
+                  <svg viewBox="0 0 20 20" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                    <rect x="2.2" y="3.5" width="15.6" height="13" rx="2"/>
+                    <rect x="9.4" y="9.4" width="6.6" height="5.3" rx="1" fill="currentColor" stroke="none"/>
+                  </svg>
+                </button>
                 <button class="ctrl-btn" @click="toggleFullscreen" title="全屏 (F)">⛶</button>
               </div>
             </div>
@@ -570,6 +580,109 @@
         </aside>
       </div>
     </main>
+
+    <!-- 摸鱼小窗：独立 Electron 置顶迷你窗口的专用界面 -->
+    <div
+      v-if="isMiniMode"
+      class="mini-player player-container"
+      :class="{ 'controls-hidden': isControlsHidden }"
+      tabindex="-1"
+      @pointermove="resetControlsTimer"
+      @pointerenter="resetControlsTimer"
+    >
+      <div class="mini-titlebar">
+        <div class="mini-title-group">
+          <span class="mini-live-dot" aria-hidden="true"></span>
+          <span class="mini-title-text" :title="activeSeries?.series_title">{{ activeSeries?.series_title || '红果小窗' }}</span>
+          <span class="mini-ep-badge">第 {{ activeEpisodeIndex }} 集</span>
+        </div>
+        <div class="mini-window-actions">
+          <button class="mini-icon-btn" :class="{ active: miniProtection }" @click="toggleMiniProtection" :title="miniProtection ? '防录屏已开启：小窗不会出现在截图/录屏中' : '防录屏已关闭：点击开启'">🛡</button>
+          <button class="mini-icon-btn" @click="cycleMiniOpacity" :title="'窗口不透明度：' + Math.round(miniOpacity * 100) + '%（点击切换）'">◐</button>
+          <button class="mini-icon-btn" :class="{ active: miniPinned }" @click="toggleMiniPin" :title="miniPinned ? '窗口已置顶（点击取消）' : '窗口未置顶（点击置顶）'">📌</button>
+          <button class="mini-icon-btn" @click="returnToMainWindow" title="返回主窗口继续播放">⤢</button>
+          <button class="mini-icon-btn" @click="hideMiniPlayer" :title="'立即隐藏小窗（' + bossKeyHint + ' 可恢复）'">👁</button>
+          <button class="mini-icon-btn close" @click="closeMiniPlayer" title="关闭小窗">✕</button>
+        </div>
+      </div>
+
+      <div class="mini-video-stage">
+        <div v-if="osdMessage" class="player-osd mini-osd" role="status">{{ osdMessage }}</div>
+        <video
+          v-if="currentStreamUrl"
+          :key="currentStreamUrl"
+          ref="videoEl"
+          class="video-element"
+          :class="{ 'fit-cover': fitMode === 'cover' }"
+          :src="currentStreamUrl"
+          playsinline
+          preload="auto"
+          autoplay
+          @play="onPlay"
+          @pause="onPause"
+          @canplay="onCanPlay"
+          @loadeddata="onCanPlay"
+          @timeupdate="onTimeUpdate"
+          @ended="onEnded"
+          @loadedmetadata="onLoadedMetadata"
+          @waiting="isBuffering = true"
+          @playing="isBuffering = false"
+          @error="onVideoError"
+          @click="handleMiniVideoClick"
+        ></video>
+
+        <div v-if="danmakuEnabled" ref="danmakuLayer" class="danmaku-layer mini-danmaku-layer" :style="{ opacity: danmakuOpacity, height: (danmakuRows * 32) + 'px' }" aria-hidden="true"></div>
+
+        <div v-if="isBuffering" class="player-buffering mini-buffering">
+          <div class="spinner"></div>
+          <span>加载中...</span>
+        </div>
+
+        <div v-if="!isPlaying && !isBuffering && !videoErrorMessage" class="play-overlay-btn mini-play-overlay" @click="togglePlay">
+          <span class="play-icon">▶</span>
+        </div>
+
+        <div v-if="videoErrorMessage" class="video-error-overlay mini-error-overlay">
+          <span class="error-icon">⚠️</span>
+          <h4>{{ videoErrorMessage }}</h4>
+          <button class="retry-btn" @click="retryCurrentEpisode">重试本集</button>
+        </div>
+      </div>
+
+      <div class="mini-bottom">
+        <div class="progress-bar-container mini-progress">
+          <input
+            class="seek-input"
+            type="range"
+            min="0"
+            :max="duration || 0"
+            step="0.1"
+            :value="currentTime"
+            :disabled="!duration"
+            aria-label="播放进度"
+            :aria-valuetext="formatTime(currentTime)"
+            @input="seekFromSlider"
+            @pointerdown="startScrubbing"
+            @pointerup="finishScrubbing"
+            @pointercancel="finishScrubbing"
+            @lostpointercapture="finishScrubbing"
+          />
+          <div class="progress-bar-buffered" :style="{ width: bufferedPercent + '%' }"></div>
+          <div class="progress-bar-played" :style="{ width: playedPercent + '%' }"></div>
+          <div class="progress-bar-thumb" :style="{ left: playedPercent + '%' }"></div>
+        </div>
+        <div class="mini-actions-row">
+          <button class="mini-ctrl-btn" @click="playPrevEpisode" :disabled="activeEpisodeIndex <= 1" title="上一集 (↑)">⏮</button>
+          <button class="mini-ctrl-btn mini-play-btn" @click="togglePlay" :title="isPlaying ? '暂停 (Space)' : '播放 (Space)'">{{ isPlaying ? '⏸' : '▶' }}</button>
+          <button class="mini-ctrl-btn" @click="playNextEpisode" :disabled="activeEpisodeIndex >= activeEpisodes.length" title="下一集 (↓)">⏭</button>
+          <span class="mini-time">{{ formatTime(currentTime) }} / {{ formatTime(duration) }}</span>
+          <span class="mini-spacer"></span>
+          <button class="mini-ctrl-btn mini-text-btn" @click="cycleMiniSpeed" title="切换倍速">{{ playbackRate }}x</button>
+          <button class="mini-ctrl-btn" @click="toggleMute" :title="isMuted ? '恢复声音 (M)' : '静音 (M)'">{{ isMuted ? '🔇' : '🔊' }}</button>
+          <button class="mini-ctrl-btn mini-text-btn" :class="{ active: danmakuEnabled }" @click="toggleMiniDanmaku" title="弹幕开关">弹</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 演员个人主页与参演短剧弹窗 -->
     <div v-if="activeActor" class="actor-modal-overlay" @click.self="closeActorDetail" @keydown="onActorModalKeydown">
@@ -891,6 +1004,18 @@
             <div class="shortcut-item">
               <div class="keys"><kbd>F</kbd> <span class="key-or">/</span> <span class="mouse-action">双击画面</span></div>
               <div class="desc">进入 / 退出全屏模式</div>
+            </div>
+            <div class="shortcut-item">
+              <div class="keys"><kbd>P</kbd></div>
+              <div class="desc">当前剧集切换到置顶小窗（摸鱼模式）</div>
+            </div>
+            <div class="shortcut-item">
+              <div class="keys"><kbd>{{ bossKeyHint }}</kbd></div>
+              <div class="desc">小窗模式下：一键隐藏 / 恢复（老板键）</div>
+            </div>
+            <div class="shortcut-item">
+              <div class="keys"><kbd>H</kbd></div>
+              <div class="desc">小窗模式下：立即隐藏</div>
             </div>
             <div class="shortcut-item">
               <div class="keys"><kbd>M</kbd></div>

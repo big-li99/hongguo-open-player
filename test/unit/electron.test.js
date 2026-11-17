@@ -9,11 +9,27 @@ for (const platform of ['darwin', 'win32', 'linux']) test(`desktop lifecycle and
   Object.assign(app, { commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true,
     whenReady: () => Promise.resolve(), getPath: () => '/tmp/player-user', setAboutPanelOptions() {}, quit() {} });
   const windows = [];
+  const ipcHandlers = new Map();
+  const ipcListeners = new Map();
   class Window extends EventEmitter {
     static getAllWindows() { return windows.filter(w => !w.closed); }
-    constructor(options) { super(); this.options = options; this.webContents = new EventEmitter(); this.webContents.reload = () => { this.reloads = (this.reloads || 0) + 1; }; this.webContents.setWindowOpenHandler = handler => { this.open = handler; }; windows.push(this); }
-    async loadURL() { this.emit('ready-to-show'); }
-    show() { this.shown = true; }
+    static fromWebContents(webContents) { return windows.find(w => w.webContents === webContents) || null; }
+    constructor(options) { super(); this.options = options; this.webContents = new EventEmitter(); this.webContents.reload = () => { this.reloads = (this.reloads || 0) + 1; }; this.webContents.send = () => {}; this.webContents.isLoading = () => false; this.webContents.setWindowOpenHandler = handler => { this.open = handler; }; windows.push(this); }
+    async loadURL(url) { this.loadedUrl = url; this.emit('ready-to-show'); }
+    getBounds() { return { x: 0, y: 0, width: 1280, height: 840 }; }
+    isMinimized() { return false; }
+    restore() {}
+    isVisible() { return this.visible !== false; }
+    hide() { this.visible = false; }
+    close() { this.closed = true; this.emit('closed'); }
+    destroy() { this.closed = true; this.emit('closed'); }
+    isDestroyed() { return Boolean(this.closed); }
+    setAlwaysOnTop(value, level) { this.alwaysOnTop = value; this.alwaysOnTopLevel = level; }
+    setVisibleOnAllWorkspaces(value) { this.visibleOnAllWorkspaces = value; }
+    setAspectRatio(value) { this.aspectRatio = value; }
+    setContentProtection(value) { this.contentProtection = value; }
+    setOpacity(value) { this.opacity = value; }
+    show() { this.shown = true; this.visible = true; }
     focus() {}
   }
   let starts = 0;
@@ -22,6 +38,16 @@ for (const platform of ['darwin', 'win32', 'linux']) test(`desktop lifecycle and
   const context = { console, process: { platform, env: {} }, __dirname: '/repo/src/electron',
     require(name) {
       if (name === 'electron') return { app, BrowserWindow: Window,
+        ipcMain: {
+          handle(channel, handler) { ipcHandlers.set(channel, handler); },
+          on(channel, handler) { ipcListeners.set(channel, handler); }
+        },
+        globalShortcut: { register: () => true, unregister() {}, unregisterAll() {} },
+        screen: {
+          getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1440, height: 900 } }),
+          getDisplayNearestPoint: () => ({ workArea: { x: 0, y: 0, width: 1440, height: 900 } }),
+          getCursorScreenPoint: () => ({ x: 0, y: 0 })
+        },
         Menu: { buildFromTemplate(tmpl) { lastMenuTemplate = tmpl; return tmpl; }, setApplicationMenu() {} },
         shell: { openExternal: async (url) => { openedUrl = url; }, openPath: async () => {} },
         dialog: { showErrorBox() {}, showMessageBox: async () => ({ response: 0 }) } };
@@ -62,6 +88,32 @@ for (const platform of ['darwin', 'win32', 'linux']) test(`desktop lifecycle and
   aboutHelp.click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(openedUrl, 'https://github.com/zfdang/hongguo-open-player');
+
+  // 摸鱼小窗：主窗口可通过 IPC 打开置顶迷你播放器，并复用同一个小窗。
+  const miniOpen = ipcHandlers.get('mini:open');
+  assert.ok(miniOpen);
+  const sender = windows[1].webContents;
+  const opened = await miniOpen({ sender }, { seriesId: '123', seriesTitle: '测试短剧', episodeIndex: 3, positionSec: 12.5 });
+  assert.equal(opened.ok, true);
+  assert.equal(opened.reused, false);
+  const mini = windows[2];
+  assert.ok(mini);
+  assert.equal(mini.options.frame, false);
+  assert.equal(mini.options.alwaysOnTop, true);
+  assert.equal(mini.alwaysOnTop, true);
+  assert.equal(mini.alwaysOnTopLevel, 'floating');
+  assert.equal(mini.aspectRatio, 9 / 16);
+  assert.equal(mini.contentProtection, true);
+  assert.ok(mini.options.webPreferences.preload.endsWith('/preload.js'));
+  assert.match(mini.loadedUrl, /\/\?mini=1&series=123&title=/);
+  assert.match(mini.loadedUrl, /&episode=3&position=12\.500$/);
+  assert.equal(mini.shown, true);
+  const reused = await miniOpen({ sender }, { seriesId: '456' });
+  assert.equal(reused.ok, true);
+  assert.equal(reused.reused, true);
+  assert.equal(windows.length, 3);
+  const denied = await miniOpen({ sender: new EventEmitter() }, { seriesId: '456' });
+  assert.equal(denied.ok, false);
 });
 
 test('packaging artifact names use english hongguo-open-player without breaking chinese productName', () => {

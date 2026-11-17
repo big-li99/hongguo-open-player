@@ -3380,3 +3380,314 @@ html.platform-win .app-header { padding-right: 160px; }
 .seasons-close-footer-btn:hover {
   opacity: 0.9;
 }
+
+/* ================= 摸鱼小窗 (Mini Player) ================= */
+html.mini-window,
+html.mini-window body,
+html.mini-window #app {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+.mini-player {
+  position: fixed;
+  inset: 0;
+  display: block;
+  background: #000;
+  border-right: none;
+  outline: none;
+  overflow: hidden;
+}
+
+.mini-video-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  overflow: hidden;
+}
+
+.mini-player .video-element {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.mini-titlebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 6px 16px 10px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.45) 55%, transparent 100%);
+  -webkit-app-region: drag;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.mini-titlebar button {
+  -webkit-app-region: no-drag;
+}
+
+.mini-title-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mini-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff3355;
+  box-shadow: 0 0 6px rgba(255, 51, 85, 0.85);
+  flex: none;
+  animation: mini-live-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes mini-live-pulse {
+  50% { opacity: 0.35; }
+}
+
+.mini-title-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px #000;
+}
+
+.mini-ep-badge {
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.14);
+  padding: 3px 6px;
+  border-radius: 8px;
+}
+
+.mini-window-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  -webkit-app-region: no-drag;
+}
+
+.mini-icon-btn {
+  width: 23px;
+  height: 23px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mini-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.mini-icon-btn.active {
+  color: #ffd166;
+  background: rgba(255, 209, 102, 0.16);
+}
+
+.mini-icon-btn.close:hover {
+  background: #e5484d;
+  color: #fff;
+}
+
+.mini-osd {
+  top: 38%;
+  font-size: 12px;
+  padding: 8px 14px;
+}
+
+.mini-danmaku-layer {
+  top: 34px;
+}
+
+.mini-danmaku-layer .danmaku-item {
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.mini-buffering {
+  padding: 14px 18px;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.mini-buffering .spinner {
+  width: 24px;
+  height: 24px;
+  border-width: 2px;
+}
+
+.mini-play-overlay {
+  width: 56px;
+  height: 56px;
+  font-size: 22px;
+}
+
+.mini-error-overlay {
+  gap: 10px;
+  padding: 16px;
+}
+
+.mini-error-overlay h4 {
+  font-size: 12px;
+  line-height: 1.5;
+  font-weight: 500;
+  color: #f3f4f6;
+}
+
+.mini-error-overlay .retry-btn {
+  padding: 7px 16px;
+  font-size: 12px;
+}
+
+.mini-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  padding: 18px 10px 7px;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.92) 0%, rgba(0, 0, 0, 0.55) 58%, transparent 100%);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.mini-progress {
+  height: 20px;
+  margin-bottom: 2px;
+}
+
+.mini-progress.progress-bar-container::before {
+  top: 8px;
+}
+
+.mini-progress .progress-bar-buffered,
+.mini-progress .progress-bar-played {
+  top: 8px;
+}
+
+.mini-progress .progress-bar-thumb {
+  top: 10px;
+}
+
+.mini-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mini-ctrl-btn {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: #fff;
+  width: 27px;
+  height: 26px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mini-ctrl-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.mini-ctrl-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.mini-ctrl-btn.active {
+  color: #ffd166;
+}
+
+.mini-play-btn {
+  color: #ff657f;
+  font-size: 15px;
+}
+
+.mini-text-btn {
+  width: auto;
+  min-width: 31px;
+  padding: 0 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.mini-time {
+  flex: none;
+  margin-left: 3px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mini-spacer {
+  flex: 1;
+  min-width: 2px;
+}
+
+.mini-player.controls-hidden {
+  cursor: none;
+}
+
+.mini-player.controls-hidden .mini-titlebar {
+  opacity: 0;
+  transform: translateY(-100%);
+  pointer-events: none;
+}
+
+.mini-player.controls-hidden .mini-bottom {
+  opacity: 0;
+  transform: translateY(100%);
+  pointer-events: none;
+}
+
+.mini-window-btn:hover {
+  color: var(--accent);
+}
+
+html.mini-window .app-toast {
+  bottom: 64px;
+  max-width: calc(100vw - 24px);
+  padding: 8px 12px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-align: center;
+  border-radius: 8px;
+}
