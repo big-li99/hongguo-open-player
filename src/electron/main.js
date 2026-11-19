@@ -16,6 +16,7 @@ const MINI_MIN_HEIGHT = 124;
 
 let mainWindow = null;
 let miniWindow = null;
+let miniLastProgress = null; // 小窗最后一次上报的播放进度
 let appBaseUrl = '';
 let bossKeyRegistered = false;
 let miniFitApplied = false;
@@ -256,14 +257,24 @@ function toggleMiniWindow(forceShow) {
   return shouldShow;
 }
 
-function notifyMainMiniState(active) {
+function notifyMainMiniState(active, closedPayload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('main:mini-state', Boolean(active));
+    // 小窗关闭时，把最后一次进度同步给主窗口，让主窗口 UI 恢复到最新集数/位置
+    if (!active && closedPayload) {
+      mainWindow.webContents.send('main:mini-closed', closedPayload);
+    }
   }
 }
 
 function openMiniWindow(payload = {}) {
   if (!appBaseUrl) return { ok: false, error: '播放服务尚未就绪' };
+  miniLastProgress = {
+    seriesId: payload.seriesId || '',
+    seriesTitle: payload.seriesTitle || '',
+    episodeIndex: payload.episodeIndex,
+    positionSec: payload.positionSec || 0
+  };
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini:play', payload);
     if (!miniWindow.isVisible()) miniWindow.show();
@@ -330,9 +341,11 @@ function openMiniWindow(payload = {}) {
     });
   });
   mini.on('closed', () => {
+    const lastProgress = miniLastProgress;
+    miniLastProgress = null;
     if (miniWindow === mini) miniWindow = null;
     unregisterBossKey();
-    notifyMainMiniState(false);
+    notifyMainMiniState(false, lastProgress);
   });
   mini.loadURL(buildMiniUrl(payload)).catch(error => {
     console.error('Mini window failed to load:', error);
@@ -376,6 +389,13 @@ function registerMiniIpc() {
   });
 
   ipcMain.on('mini:hide', () => toggleMiniWindow(false));
+
+  // 小窗定期上报播放进度，供关闭时转发给主窗口
+  ipcMain.on('mini:sync-progress', (event, payload) => {
+    if (miniWindow && event.sender === miniWindow.webContents && payload) {
+      miniLastProgress = payload;
+    }
+  });
 
   ipcMain.on('mini:fit-video', (event, size) => {
     const win = BrowserWindow.fromWebContents(event.sender);

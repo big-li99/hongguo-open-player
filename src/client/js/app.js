@@ -1731,6 +1731,11 @@ const app = createApp({
     }
 
     function closeMiniPlayer() {
+      saveProgressNow();
+      videoEl.value?.pause?.();
+      if (isMiniMode && activeSeries.value && window.hongguoDesktop?.notifyProgress) {
+        window.hongguoDesktop.notifyProgress(miniPayload());
+      }
       if (window.hongguoDesktop?.closeMiniPlayer) {
         window.hongguoDesktop.closeMiniPlayer();
         return;
@@ -2155,6 +2160,14 @@ const app = createApp({
 
     function saveProgressNow() {
       if (!activeSeries.value || !progressReady || viewMode.value !== 'theater') return;
+      if (isMiniMode && window.hongguoDesktop?.notifyProgress) {
+        window.hongguoDesktop.notifyProgress({
+          seriesId: activeSeries.value.series_id,
+          seriesTitle: activeSeries.value.series_title || '',
+          episodeIndex: activeEpisodeIndex.value,
+          positionSec: Number(currentTime.value) || 0
+        });
+      }
       const curEp = activeEpisodes.value.find(e => e.vid_index === activeEpisodeIndex.value);
       fetch('/api/progress', {
         keepalive: true,
@@ -2337,6 +2350,18 @@ const app = createApp({
       document.addEventListener?.('pointerdown', handleGlobalPointerDown, true);
       document.addEventListener?.('focusin', handleGlobalFocusIn);
       window.addEventListener('pagehide', saveProgressNow);
+      if (isMiniMode) {
+        // 小窗关闭前把最新进度通知给主进程，让主窗口 UI 能同步
+        window.addEventListener('pagehide', () => {
+          if (!activeSeries.value) return;
+          window.hongguoDesktop?.notifyProgress?.({
+            seriesId: activeSeries.value.series_id,
+            seriesTitle: activeSeries.value.series_title || '',
+            episodeIndex: activeEpisodeIndex.value,
+            positionSec: Number(currentTime.value) || 0
+          });
+        });
+      }
       document.addEventListener?.('fullscreenchange', fullscreenChanged);
 
       // 桌面宿主 IPC：小窗切换、老板键显隐、小窗返回主窗
@@ -2348,16 +2373,34 @@ const app = createApp({
           hostUnsubscribers.push(window.hongguoDesktop.onMiniState?.(active => {
             miniWindowActive.value = Boolean(active);
           }));
-          hostUnsubscribers.push(window.hongguoDesktop.onOpenDrama?.(payload => {
+          const handleDramaSync = payload => {
             if (!payload?.seriesId) return;
             miniWindowActive.value = false;
             toastText.value = '';
             clearTimeout(toastTimer);
-            openTheater(
-              { series_id: payload.seriesId, series_title: payload.seriesTitle || '' },
-              { episodeIndex: payload.episodeIndex, resumeSec: payload.positionSec, skipSave: true }
-            );
-          }));
+            const targetEp = Number(payload.episodeIndex) || 1;
+            const targetPos = Number(payload.positionSec) || 0;
+            if (viewMode.value === 'theater' && activeSeries.value?.series_id === payload.seriesId) {
+              const ep = activeEpisodes.value.find(e => e.vid_index === targetEp);
+              if (ep && ep.vid_index !== activeEpisodeIndex.value) {
+                pendingResumeSec = targetPos;
+                switchEpisode(ep);
+              } else if (videoEl.value) {
+                if (targetPos >= 0) {
+                  try { videoEl.value.currentTime = targetPos; } catch (_) {}
+                  currentTime.value = targetPos;
+                }
+              }
+            } else {
+              openTheater(
+                { series_id: payload.seriesId, series_title: payload.seriesTitle || '' },
+                { episodeIndex: targetEp, resumeSec: targetPos, skipSave: true }
+              );
+            }
+          };
+          // 小窗直接关闭时，把小窗最后的进度同步回主窗口
+          hostUnsubscribers.push(window.hongguoDesktop.onMiniClosed?.(handleDramaSync));
+          hostUnsubscribers.push(window.hongguoDesktop.onOpenDrama?.(handleDramaSync));
         }
       }
 

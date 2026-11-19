@@ -26,8 +26,10 @@ contextBridge.exposeInMainWorld('hongguoDesktop', {
   setMiniOpacity: (value) => ipcRenderer.send('mini:opacity', Number(value)),
   setMiniProtection: (value) => ipcRenderer.send('mini:protection', Boolean(value)),
   fitMiniToVideo: (width, height, force = false) => ipcRenderer.send('mini:fit-video', { width: Number(width), height: Number(height), force: Boolean(force) }),
+  notifyProgress: (payload) => ipcRenderer.send('mini:sync-progress', payload),
   onMiniPlay: (callback) => subscribe('mini:play', callback),
   onMiniVisibility: (callback) => subscribe('mini:visibility', callback),
   onMiniState: (callback) => subscribe('main:mini-state', callback),
-  onOpenDrama: (callback) => subscribe('main:open-drama', callback)
+  onOpenDrama: (callback) => subscribe('main:open-drama', callback),
+  onMiniClosed: (callback) => subscribe('main:mini-closed', callback)
 });

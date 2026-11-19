@@ -14,7 +14,7 @@ for (const platform of ['darwin', 'win32', 'linux']) test(`desktop lifecycle and
   class Window extends EventEmitter {
     static getAllWindows() { return windows.filter(w => !w.closed); }
     static fromWebContents(webContents) { return windows.find(w => w.webContents === webContents) || null; }
-    constructor(options) { super(); this.options = options; this.bounds = { x: options.x || 0, y: options.y || 0, width: options.width || 0, height: options.height || 0 }; this.webContents = new EventEmitter(); this.webContents.reload = () => { this.reloads = (this.reloads || 0) + 1; }; this.webContents.send = () => {}; this.webContents.isLoading = () => false; this.webContents.setWindowOpenHandler = handler => { this.open = handler; }; windows.push(this); }
+    constructor(options) { super(); this.options = options; this.bounds = { x: options.x || 0, y: options.y || 0, width: options.width || 0, height: options.height || 0 }; this.webContents = new EventEmitter(); this.webContents.reload = () => { this.reloads = (this.reloads || 0) + 1; }; this.webContents.sent = []; this.webContents.send = (channel, ...args) => { this.webContents.sent.push({ channel, args }); }; this.webContents.isLoading = () => false; this.webContents.setWindowOpenHandler = handler => { this.open = handler; }; windows.push(this); }
     async loadURL(url) { this.loadedUrl = url; this.emit('ready-to-show'); }
     getBounds() { return this.bounds; }
     setBounds(bounds) { this.bounds = { ...this.bounds, ...bounds }; this.boundsSet = bounds; this.emit('resize'); }
@@ -122,6 +122,17 @@ for (const platform of ['darwin', 'win32', 'linux']) test(`desktop lifecycle and
   assert.equal(windows.length, 3);
   const denied = await miniOpen({ sender: new EventEmitter() }, { seriesId: '456' });
   assert.equal(denied.ok, false);
+
+  // 小窗进度同步：小窗上报播放进度，小窗直接关闭后主窗口收到 main:mini-closed
+  const syncProgress = ipcListeners.get('mini:sync-progress');
+  assert.ok(syncProgress);
+  syncProgress({ sender: mini.webContents }, { seriesId: '456', seriesTitle: '第二部', episodeIndex: 2, positionSec: 33.4 });
+  mini.close();
+  const closedMsg = windows[1].webContents.sent.find(msg => msg.channel === 'main:mini-closed');
+  assert.ok(closedMsg);
+  assert.equal(closedMsg.args[0].seriesId, '456');
+  assert.equal(closedMsg.args[0].episodeIndex, 2);
+  assert.equal(closedMsg.args[0].positionSec, 33.4);
 });
 
 test('packaging artifact names use english hongguo-open-player without breaking chinese productName', () => {
