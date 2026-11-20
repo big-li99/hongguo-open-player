@@ -106,7 +106,8 @@ for (const platform of ['darwin', 'win32', 'linux']) test(`desktop lifecycle and
   assert.equal(mini.options.minWidth, 220);
   assert.equal(mini.options.minHeight, 124);
   assert.equal(mini.contentProtection, true);
-  assert.ok(mini.options.webPreferences.preload.endsWith('/preload.js'));
+  // Windows paths join with a backslash; assert on the basename, not the separator.
+  assert.equal(require('node:path').basename(mini.options.webPreferences.preload), 'preload.js');
   assert.match(mini.loadedUrl, /\/\?mini=1&series=123&title=/);
   assert.match(mini.loadedUrl, /&episode=3&position=12\.500$/);
   assert.equal(mini.shown, true);
