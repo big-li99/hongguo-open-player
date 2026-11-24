@@ -2,11 +2,26 @@
 
 # 红果开源播放器 (Hongguo Open Player)
 
-[![CI](https://github.com/zfdang/hongguo-open-player/actions/workflows/ci.yml/badge.svg)](https://github.com/zfdang/hongguo-open-player/actions/workflows/ci.yml)
-[![Release](https://github.com/zfdang/hongguo-open-player/actions/workflows/build-release.yml/badge.svg)](https://github.com/zfdang/hongguo-open-player/actions/workflows/build-release.yml)
+[![CI](https://github.com/big-li99/hongguo-open-player/actions/workflows/ci.yml/badge.svg)](https://github.com/big-li99/hongguo-open-player/actions/workflows/ci.yml)
+[![Release](https://github.com/big-li99/hongguo-open-player/actions/workflows/build-release.yml/badge.svg)](https://github.com/big-li99/hongguo-open-player/actions/workflows/build-release.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
 一款红果短剧跨平台桌面播放客户端（支持 macOS 与 Windows）。无需安装安卓模拟器，内置流媒体解密与本地代理，提供剧目检索、演员与作品浏览、沉浸式观影和本地进度记忆。
+
+---
+
+## 🔀 分支说明与上游差异
+
+> **独立维护声明**：本仓库基于上游 [`zfdang/hongguo-open-player`](https://github.com/zfdang/hongguo-open-player) 的 `v1.12.3` 分叉演进。**从 `v1.13.0` 起已独立维护，今后不会再合并上游的任何更新**；后续所有功能迭代、播放协议适配与安装包发布均在本仓库独立进行。
+
+与上游分支的主要差异如下：
+
+| 对比维度 | 本仓库（`big-li99/hongguo-open-player`） | 上游（`zfdang/hongguo-open-player`） |
+| --- | --- | --- |
+| **产品定位与功能取舍** | 坚持**免账号登录、纯本地轻量观影**路线：保留本地观看历史/进度/收藏、剧星榜与演员主页、分类浏览（含 AI 短剧）与弹幕功能 | 合入 Plus 改版（[#108](https://github.com/zfdang/hongguo-open-player/pull/108)），转向红果账号登录与云端书架同步、视频评论/点赞互动、首页推荐 Feed，并移除剧星榜、AI 短剧与本地收藏 |
+| **摸鱼小窗（Mini Player）** | **本仓库独有**：播放页按 `P` 或点击小窗按钮即可打开无边框置顶小窗，支持真实宽高比自动贴合、自由缩放、适应/铺满切换、一键再贴合、防录屏保护、透明度调节、弹幕/倍速/切集、`⌘⌥B` / `Ctrl+Alt+B` 老板键秒隐暂停，以及关闭或返回主窗口时自动同步进度 | 无 |
+| **播放取流与协议适配** | 独立跟进红果移动端 v5 播放签名协议（已更新至 `7.4.5.32` / `preload/v1` 与 Medusa v5 `field 21 = 312`，保留 `device_level=1` 优先直出原生 HEVC 1080p），内置 `GET video_tab` 空体 `MD5("")` v5 兜底通道与全链空响应 60 秒冷却机制 | 按上游自身 Plus 方案独立调整播放与账号体系 |
+| **工程与发版流水线** | 保留完整的 GitHub Actions 离线测试（CI）与跨平台自动发版流水线（macOS Apple Silicon/Intel + Windows x64）；ByteVC2 解码器在 CI 阶段按平台架构编译打包，不向 Git 仓库提交大型预编译二进制文件 | Plus 分支已移除原 GitHub Actions 流水线并将 Windows `ffmpeg.exe` 纳入仓库 |
 
 ---
 
@@ -76,7 +91,7 @@
 
 目前 macOS 安装包未使用 Apple 开发者证书签名和公证，系统的安全检查可能阻止其打开，并提示“应用已损坏”。同样的提示也可能由下载损坏或文件被篡改引起。
 
-请先从项目的 [GitHub Releases](https://github.com/zfdang/hongguo-open-player/releases) 重新下载安装包，选择适合自己 Mac 的版本，并将应用拖入“应用程序”文件夹。如果确认应用来自官方发布页面且未被篡改，仍然无法打开，可以打开“终端”并执行：
+请先从项目的 [GitHub Releases](https://github.com/big-li99/hongguo-open-player/releases) 重新下载安装包，选择适合自己 Mac 的版本，并将应用拖入“应用程序”文件夹。如果确认应用来自官方发布页面且未被篡改，仍然无法打开，可以打开“终端”并执行：
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/红果开源播放器.app"
@@ -122,6 +137,7 @@ xattr -dr com.apple.quarantine "/Applications/红果开源播放器.app"
 * [`librempeg/librempeg`](https://github.com/librempeg/librempeg)：提供了 ByteVC2 解码支持，是上述解码补丁的上游来源。
 
 ### 🖥️ 客户端产品与交互设计参考
+* [`zfdang/hongguo-open-player`](https://github.com/zfdang/hongguo-open-player)：本仓库的原上游项目（基于其 `v1.12.3` 版本分叉，遵循 `GPL-3.0-only` 协议）。
 * [`yangbin1322/hongguo-player`](https://github.com/yangbin1322/hongguo-player)：原第三方 macOS 客户端，提供了 9:16 沉浸式竖屏观影体验与原型交互参考。
 
 ### ☁️ 云端长任务与交付链路参考
