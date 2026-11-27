@@ -723,3 +723,255 @@ test('fetchAppPlayUrl recovers via v5 single-episode video_model/v1, validates v
     getPlaybackDevice.reset();
   }
 });
+
+test('fetchAppSeriesDetail sends v5-signed detail request, normalizes HEIC images, metadata, and episode sorting', async () => {
+  const { getPlaybackDevice } = require('../../src/server/native/playback-device');
+  const originalRequest = appSource.requestJson;
+  appSource.clearEntryCache();
+  getPlaybackDevice.reset();
+  const captured = [];
+  const synopsis = '这是一段超过六十个字符的完整剧情简介内容，用来验证单集标题重复整部剧简介时会被正确清空，避免侧边栏显示超长文本。';
+
+  appSource.requestJson = async (url, options) => {
+    if (url.includes('register')) {
+      return { code: 0, device_id_str: '999100', install_id_str: '888100' };
+    }
+    captured.push({ url, options });
+    const parsedUrl = new URL(url);
+    assert.equal(parsedUrl.pathname, '/novel/player/multi_video_detail/preload/v1');
+    assert.equal(parsedUrl.searchParams.get('aid'), '8662');
+    assert.equal(parsedUrl.searchParams.get('version_code'), '74532');
+    assert.equal(parsedUrl.searchParams.get('version_name'), '7.4.5.32');
+    assert.equal(parsedUrl.searchParams.get('device_type'), '25053RT47C');
+    assert.equal(options.headers['Content-Encoding'], 'gzip');
+    assert.ok(options.headers['x-khronos']);
+    assert.ok(options.headers['x-helios']);
+    assert.ok(options.headers['x-medusa']);
+    assert.equal(options.headers['x-ss-stub'], createHash('md5').update(options.data).digest('hex').toUpperCase());
+    assert.equal(options.maxContentLength, 8 * 1024 * 1024);
+    const body = JSON.parse(gunzipSync(options.data));
+    assert.equal(body.dr_scene, 'preload');
+    assert.equal(body.series_id, '7711182077240036377');
+    assert.equal(body.biz_param.source, 7);
+
+    return {
+      code: 0,
+      data: {
+        '7711182077240036377': {
+          video_data: {
+            series_id: 7711182077240036000,
+            series_id_str: '7711182077240036377',
+            series_title: '测试短剧第三季',
+            series_intro: synopsis,
+            episode_right_text: '全3集',
+            series_cover: 'https://p3-reading-sign.fqnovelpic.com/novel-pic/abc123~tplv-super:1200:0.heic?x-expires=1800000000',
+            category_schema: JSON.stringify([{ name: '奇幻' }, { name: '脑洞' }, { name: '奇幻' }]),
+            secondary_infos: [
+              { data_type: 4, content: '9.4分' },
+              { data_type: 3, content: '兜底标签' },
+            ],
+            hot_score: 72921000,
+            digg_cnt: 0,
+            followed_cnt: 914297,
+            celebrities: [
+              { is_label: true, nickname: '领衔主演' },
+              {
+                celebrity_id: '7521654909997962558',
+                nickname: '陈杨婷丹',
+                sub_title: '饰 黛蜜梨',
+                avatar: 'https://p3-novel-sign.byteimg.com/novel-pic/celeb1~tplv-resize:200:0.heic?x-expires=1800000000',
+              },
+              {
+                celebrity_id: '7457097932345464126',
+                nickname: '代高政',
+                sub_title: '饰 萧戡',
+                avatar: 'https://example.com/other.heic',
+              },
+            ],
+            video_list: [
+              {
+                vid: '20002',
+                vid_index: 2,
+                series_id: '7711182077240036377',
+                title: '特别篇',
+                cover: 'https://p6-novel.byteimg.com/novel-pic/ep2~tplv-shrink:640:0.image',
+              },
+              {
+                vid: '20001',
+                vid_index: 1,
+                series_id: '7711182077240036377',
+                title: synopsis,
+                cover: 'https://p6-novel.byteimg.com/novel-pic/ep1~tplv-super:640:0.heic',
+              },
+            ],
+          },
+        },
+      },
+    };
+  };
+
+  try {
+    const detail = await appSource.fetchAppSeriesDetail('7711182077240036377');
+    assert.equal(captured.length, 1);
+    assert.equal(detail.source, 'app');
+    assert.equal(detail.series_id, '7711182077240036377');
+    assert.equal(detail.series_title, '测试短剧第三季');
+    assert.equal(detail.total, 2);
+    assert.equal(detail.episode_label, '全3集');
+    assert.equal(detail.intro, synopsis);
+    assert.equal(detail.cover, 'https://p3-novel.byteimg.com/novel-pic/abc123~tplv-shrink:640:0.image');
+    assert.deepEqual(detail.tags, ['奇幻', '脑洞']);
+    assert.deepEqual(detail.social_info, {
+      rating: 9.4,
+      rating_count: '',
+      hot_text: '7292万热度',
+      like_count: '',
+      favorite_count: '914297',
+    });
+    assert.deepEqual(detail.celebrities, [
+      {
+        actor_id: '7521654909997962558',
+        name: '陈杨婷丹',
+        avatar: 'https://p3-novel.byteimg.com/novel-pic/celeb1~tplv-shrink:640:0.image',
+        role: '饰 黛蜜梨',
+      },
+      {
+        actor_id: '7457097932345464126',
+        name: '代高政',
+        avatar: '',
+        role: '饰 萧戡',
+      },
+    ]);
+    assert.deepEqual(detail.episodes.map(ep => ep.vid), ['20001', '20002']);
+    assert.deepEqual(detail.episodes.map(ep => ep.vid_index), [1, 2]);
+    assert.equal(detail.episodes[0].title, '');
+    assert.equal(detail.episodes[0].cover, 'https://p3-novel.byteimg.com/novel-pic/ep1~tplv-shrink:640:0.image');
+    assert.equal(detail.episodes[1].title, '特别篇');
+    assert.equal(detail.episodes[1].cover, 'https://p6-novel.byteimg.com/novel-pic/ep2~tplv-shrink:640:0.image');
+  } finally {
+    appSource.requestJson = originalRequest;
+    appSource.clearEntryCache();
+    getPlaybackDevice.reset();
+  }
+});
+
+test('fetchAppSeriesDetail fails over across DETAIL_APIS on EMPTY_RESPONSE, remembers sticky host, and resets via clearEntryCache', async () => {
+  const { getPlaybackDevice } = require('../../src/server/native/playback-device');
+  const originalRequest = appSource.requestJson;
+  appSource.clearEntryCache();
+  getPlaybackDevice.reset();
+  const urls = [];
+  let failUntilNonPreload = true;
+
+  appSource.requestJson = async (url) => {
+    if (url.includes('register')) {
+      return { code: 0, device_id_str: '999101', install_id_str: '888101' };
+    }
+    urls.push(url);
+    if (failUntilNonPreload && !url.includes('/novel/player/multi_video_detail/v1/')) {
+      throw Object.assign(new Error('App upstream returned empty response'), { code: 'EMPTY_RESPONSE' });
+    }
+    return {
+      code: 0,
+      data: {
+        '7711182077240036378': {
+          video_data: {
+            series_id: '7711182077240036378',
+            series_title: '故障转移短剧',
+            video_list: [{ vid: '30001', vid_index: 1, series_id: '7711182077240036378' }],
+          },
+        },
+      },
+    };
+  };
+
+  try {
+    const first = await appSource.fetchAppSeriesDetail('7711182077240036378');
+    assert.equal(first.episodes.length, 1);
+    assert.equal(urls.length, 7);
+    assert.ok(urls[6].includes('reading.snssdk.com/novel/player/multi_video_detail/v1/'));
+
+    urls.length = 0;
+    failUntilNonPreload = false;
+    const second = await appSource.fetchAppSeriesDetail('7711182077240036378');
+    assert.equal(second.episodes.length, 1);
+    assert.equal(urls.length, 1);
+    assert.ok(urls[0].includes('reading.snssdk.com/novel/player/multi_video_detail/v1/'), 'sticky detail host should be reused first');
+
+    appSource.clearEntryCache();
+    urls.length = 0;
+    await appSource.fetchAppSeriesDetail('7711182077240036378');
+    assert.equal(urls.length, 1);
+    assert.ok(urls[0].includes('/novel/player/multi_video_detail/preload/v1'), 'clearEntryCache should reset sticky detail host');
+  } finally {
+    appSource.requestJson = originalRequest;
+    appSource.clearEntryCache();
+    getPlaybackDevice.reset();
+  }
+});
+
+test('fetchAppSeriesDetail fails closed on mismatched series_id, foreign/invalid episodes, and BUSINESS_REJECTED', async () => {
+  const { getPlaybackDevice } = require('../../src/server/native/playback-device');
+  const originalRequest = appSource.requestJson;
+  appSource.clearEntryCache();
+  getPlaybackDevice.reset();
+  let calls = 0;
+  let mockPayload = null;
+
+  appSource.requestJson = async (url) => {
+    if (url.includes('register')) {
+      return { code: 0, device_id_str: '999102', install_id_str: '888102' };
+    }
+    calls++;
+    return mockPayload;
+  };
+
+  try {
+    // BUSINESS_REJECTED aborts immediately without probing other hosts
+    calls = 0;
+    mockPayload = { code: 1001, data: {} };
+    await assert.rejects(appSource.fetchAppSeriesDetail('7711182077240036377'), { code: 'BUSINESS_REJECTED' });
+    assert.equal(calls, 1);
+
+    // Mismatched series key in data
+    mockPayload = { code: 0, data: { '9999999': { video_data: { video_list: [{ vid: '1', vid_index: 1 }] } } } };
+    await assert.rejects(appSource.fetchAppSeriesDetail('7711182077240036377'), { code: 'INVALID_RESPONSE' });
+
+    // Foreign episode series_id
+    mockPayload = {
+      code: 0,
+      data: {
+        '7711182077240036377': {
+          video_data: {
+            series_id: '7711182077240036377',
+            video_list: [{ vid: '100', vid_index: 1, series_id: '8888888' }],
+          },
+        },
+      },
+    };
+    await assert.rejects(appSource.fetchAppSeriesDetail('7711182077240036377'), { code: 'INVALID_RESPONSE' });
+
+    // Non-numeric vid or duplicate vids
+    for (const badList of [
+      [{ vid: 'v1_dnYsWS_sCDzIfAOQre7MChnU8Zs', vid_index: 1 }],
+      [{ vid: '100', vid_index: 1 }, { vid: '100', vid_index: 2 }],
+    ]) {
+      mockPayload = {
+        code: 0,
+        data: {
+          '7711182077240036377': {
+            video_data: {
+              series_id: '7711182077240036377',
+              video_list: badList,
+            },
+          },
+        },
+      };
+      await assert.rejects(appSource.fetchAppSeriesDetail('7711182077240036377'), { code: 'INVALID_RESPONSE' });
+    }
+  } finally {
+    appSource.requestJson = originalRequest;
+    appSource.clearEntryCache();
+    getPlaybackDevice.reset();
+  }
+});

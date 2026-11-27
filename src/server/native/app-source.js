@@ -26,6 +26,26 @@ const VIDEO_APIS = [
     'https://is.snssdk.com/novel/player/multi_video_model/preload/v1',
     'https://api5-normal-hl.fqnovel.com/novel/player/multi_video_model/preload/v1',
 ];
+const DETAIL_APIS = [
+    'https://reading.snssdk.com/novel/player/multi_video_detail/preload/v1',
+    'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_detail/preload/v1',
+    'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_detail/preload/v1',
+    'https://api5-normal-lq.fqnovel.com/novel/player/multi_video_detail/preload/v1',
+    'https://is.snssdk.com/novel/player/multi_video_detail/preload/v1',
+    'https://api5-normal-hl.fqnovel.com/novel/player/multi_video_detail/preload/v1',
+    'https://reading.snssdk.com/novel/player/multi_video_detail/v1/',
+    'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_detail/v1/',
+];
+const DETAIL_BIZ_PARAM = {
+    detail_page_version: 0,
+    disable_digg_stat: false,
+    need_all_video_definition: false,
+    need_mp4_align: false,
+    screen_width_px: '1280',
+    source: 7,
+    use_os_player: false,
+    use_server_dns: false,
+};
 const SHORTPLAY_API = 'https://api3-normal-sinfonlinea.fqnovel.com/novel/player/video_model/v1/';
 const SHORTPLAY_APIS = [
     SHORTPLAY_API,
@@ -430,7 +450,7 @@ async function requestJson(url, options, deadline, signal) {
             response = await axios({
                 ...transportOptions, headers, url, timeout, signal, maxRedirects: 0,
                 responseType: 'text', transformResponse: [(data) => data],
-                maxContentLength: 2 * 1024 * 1024, maxBodyLength: 1024 * 1024,
+                maxContentLength: transportOptions.maxContentLength || 2 * 1024 * 1024, maxBodyLength: 1024 * 1024,
                 validateStatus: () => true,
             });
         } catch (error) {
@@ -455,7 +475,7 @@ async function requestJson(url, options, deadline, signal) {
             response_bytes: Buffer.byteLength(raw), outcome, business_code: Number.isFinite(businessCode) ? businessCode : null,
             logid, retry_after: String(response.headers?.['retry-after'] || '').slice(0, 64),
             content_type: String(response.headers?.['content-type'] || '').slice(0, 128),
-            ...(diagnostics && target.pathname.includes('/player/')
+            ...(diagnostics?.vid && target.pathname.includes('/player/')
                 ? { has_requested_video: Boolean(extractModelEntries(parsed?.data)?.[diagnostics.vid] || parsed?.data?.video_model) } : {}), ...state,
         });
         if ([301, 302, 303, 307, 308].includes(response.status)) {
@@ -488,6 +508,7 @@ async function requestJson(url, options, deadline, signal) {
 
 const entryCache = new Map();
 const preferredRouteByDevice = new Map();
+const preferredDetailApiByDevice = new Map();
 const inFlightEntryRequests = new Map();
 const SHORTPLAY_PREF_TTL_MS = 300000;
 const FRESH_DEVICE_SYNC_WINDOW_MS = 15000;
@@ -509,6 +530,7 @@ function clearEntryCache(vid) {
     } else {
         entryCache.clear();
         preferredRouteByDevice.clear();
+        preferredDetailApiByDevice.clear();
         inFlightEntryRequests.clear();
         playbackChannelCooldownUntil = 0;
     }
@@ -940,4 +962,298 @@ async function fetchAppPlayUrl(vid, options = {}) {
     return await parseEntryPlayInfo(vid, currentEntry, requestedQuality, allowLowerQuality, deadline, signal, options.allowBytevc2 === true, allowHevc, allowHevcTranscode);
 }
 
-module.exports = { fetchAppPlayUrl, clearEntryCache, isHevcCodec, signedSearchRequest, signedMetadataRequest, parseSearchInteger, requestJson, playbackRequest, singleVideoModelRequest, shortplayRequest, SEARCH_API, SEARCH_UA };
+/**
+ * Normalize App image URLs and convert novel-pic HEIC assets to a Chromium-decodable JPEG variant.
+ */
+function normalizeAppImageUrl(value) {
+    const cleaned = cleanUrl(value);
+    if (!cleaned) return '';
+    let url;
+    try {
+        url = new URL(cleaned);
+    } catch {
+        return '';
+    }
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    if (/\.heic$/i.test(url.pathname)) {
+        if (/(^|\.)(fqnovelpic\.com|byteimg\.com)$/i.test(url.hostname)
+            && url.pathname.startsWith('/novel-pic/')
+            && url.pathname.includes('~')) {
+            return `https://p3-novel.byteimg.com${url.pathname.split('~', 1)[0]}~tplv-shrink:640:0.image`;
+        }
+        return '';
+    }
+    return url.href;
+}
+
+/**
+ * Build a Medusa v5 signed POST request for /novel/player/multi_video_detail/*.
+ */
+function detailRequest(seriesId, identity, apiBase = DETAIL_APIS[0]) {
+    const payload = JSON.stringify({
+        biz_param: DETAIL_BIZ_PARAM,
+        dr_scene: 'preload',
+        series_id: String(seriesId),
+    });
+    return playbackRequest(payload, identity, apiBase);
+}
+
+function formatHotScoreText(hotScore, subTitles) {
+    const score = Number(hotScore);
+    if (Number.isFinite(score) && score > 0) {
+        if (score >= 1e8) return `${(score / 1e8).toFixed(1).replace(/\.0$/, '')}亿热度`;
+        if (score >= 1e4) return `${Math.floor(score / 1e4)}万热度`;
+        return `${Math.floor(score)}热度`;
+    }
+    if (Array.isArray(subTitles)) {
+        const match = subTitles.map(item => str(item)).find(text => /热度/.test(text));
+        if (match) return match;
+    }
+    return '';
+}
+
+function extractDetailTags(vd) {
+    const tags = [];
+    const addTag = (raw) => {
+        const text = str(raw);
+        if (text && !tags.includes(text)) tags.push(text);
+    };
+    const schema = typeof vd.category_schema === 'string' ? jsonBody(vd.category_schema) : vd.category_schema;
+    if (Array.isArray(schema)) {
+        for (const item of schema) addTag(item?.name);
+    }
+    if (!tags.length && Array.isArray(vd.secondary_infos)) {
+        for (const item of vd.secondary_infos) {
+            if (item && item.data_type === 3) addTag(item.content);
+        }
+    }
+    if (!tags.length) {
+        for (const list of [vd.tags, vd.abstract_tags, vd.rec_tags]) {
+            if (!Array.isArray(list)) continue;
+            for (const item of list) {
+                addTag(typeof item === 'string' ? item : item?.name || item?.tag_name || item?.title);
+            }
+            if (tags.length) break;
+        }
+    }
+    return tags;
+}
+
+/**
+ * Strictly parse and normalize App multi_video_detail payload into the DramaService series contract.
+ */
+function parseAppSeriesDetail(resp, seriesId) {
+    const sid = str(seriesId);
+    if (!resp || typeof resp !== 'object') {
+        throw Object.assign(new Error('App 分集接口未返回有效数据'), { code: 'INVALID_RESPONSE' });
+    }
+    if (Number(resp.Code ?? resp.code ?? 0) !== 0) {
+        throw Object.assign(new Error('App 接口暂未提供该短剧分集信息'), { code: 'BUSINESS_REJECTED' });
+    }
+    const d = resp.data;
+    if (!d || typeof d !== 'object' || Array.isArray(d) || !Object.prototype.hasOwnProperty.call(d, sid)) {
+        throw Object.assign(new Error('App 分集接口返回的剧集与请求不一致'), { code: 'INVALID_RESPONSE' });
+    }
+    const vd = d[sid]?.video_data || {};
+    // JSON 64-bit integers like series_id overflow JS safe integers, so prefer series_id_str when present.
+    const seriesIdMismatch = vd.series_id_str != null
+        ? str(vd.series_id_str) !== sid
+        : typeof vd.series_id === 'number'
+            ? vd.series_id !== Number(sid)
+            : vd.series_id != null && str(vd.series_id) !== sid;
+    if (seriesIdMismatch) {
+        throw Object.assign(new Error('App 分集接口返回的剧集与请求不一致'), { code: 'INVALID_RESPONSE' });
+    }
+    const vl = vd.video_list;
+    if (!Array.isArray(vl) || vl.length === 0) {
+        throw Object.assign(new Error('App 分集列表为空'), { code: 'MISSING_MODEL' });
+    }
+    const seenVids = new Set();
+    for (const item of vl) {
+        if (!item || typeof item !== 'object') {
+            throw Object.assign(new Error('App 分集数据格式异常'), { code: 'INVALID_RESPONSE' });
+        }
+        if (item.series_id != null && str(item.series_id) !== sid) {
+            throw Object.assign(new Error('App 分集接口返回了其他剧集的分集'), { code: 'INVALID_RESPONSE' });
+        }
+        const vid = str(item.vid);
+        if (!/^\d{1,30}$/.test(vid) || seenVids.has(vid)) {
+            throw Object.assign(new Error('App 分集数据异常'), { code: 'INVALID_RESPONSE' });
+        }
+        seenVids.add(vid);
+    }
+
+    const seriesTitle = str(vd.series_title) || '未命名短剧';
+    const intro = str(vd.series_intro);
+    const episodeLabel = str(vd.episode_right_text);
+    const seriesCover = normalizeAppImageUrl(vd.series_cover) || normalizeAppImageUrl(vd.cover_url);
+    const episodes = vl.map((item, idx) => {
+        const rawIndex = Number(item.vid_index);
+        const vidIndex = Number.isInteger(rawIndex) && rawIndex > 0 ? rawIndex : idx + 1;
+        const rawTitle = str(item.title);
+        // multi_video_detail repeats the full series synopsis in each episode's title.
+        const title = !rawTitle || rawTitle === intro || rawTitle.length > 60 ? '' : rawTitle;
+        return {
+            vid: str(item.vid),
+            vid_index: vidIndex,
+            title,
+            series_id: sid,
+            series_title: seriesTitle,
+            cover: normalizeAppImageUrl(item.cover || item.episode_cover || item.cover_url) || seriesCover,
+        };
+    });
+    episodes.sort((a, b) => a.vid_index - b.vid_index);
+    const cover = seriesCover || episodes[0]?.cover || '';
+
+    const tags = extractDetailTags(vd);
+    const celebrities = Array.isArray(vd.celebrities)
+        ? vd.celebrities
+            .filter(c => c && !c.is_label && (c.nickname || c.name))
+            .map(c => ({
+                actor_id: str(c.celebrity_id || c.actor_id),
+                name: str(c.nickname || c.name),
+                avatar: normalizeAppImageUrl(c.avatar),
+                role: str(c.sub_title || c.role),
+            }))
+        : [];
+
+    const secondaryInfos = Array.isArray(vd.secondary_infos) ? vd.secondary_infos : [];
+    const ratingItem = secondaryInfos.find(item => item && item.data_type === 4);
+    const ratingMatch = str(ratingItem?.content).match(/(\d+(?:\.\d+)?)/);
+    const parsedRating = ratingMatch ? Number(ratingMatch[1]) : null;
+    const rating = Number.isFinite(parsedRating) && parsedRating > 0 ? parsedRating : null;
+    const hotText = formatHotScoreText(vd.hot_score, vd.series_sub_title_list);
+    const diggNum = Number(vd.digg_cnt);
+    const likeCount = Number.isFinite(diggNum) && diggNum > 0 ? String(Math.floor(diggNum)) : '';
+    const favNum = Number(vd.followed_cnt);
+    const favoriteCount = Number.isFinite(favNum) && favNum > 0 ? String(Math.floor(favNum)) : '';
+    const socialInfo = (rating || hotText || likeCount || favoriteCount)
+        ? {
+            rating,
+            rating_count: '',
+            hot_text: hotText,
+            like_count: likeCount,
+            favorite_count: favoriteCount,
+        }
+        : null;
+
+    return {
+        series_id: sid,
+        series_title: seriesTitle,
+        cover,
+        total: episodes.length,
+        episodes,
+        intro,
+        tags,
+        episode_label: episodeLabel,
+        social_info: socialInfo,
+        celebrities,
+        source: 'app',
+    };
+}
+
+function rememberDetailApi(devKey, apiBase) {
+    if (!devKey || !apiBase) return;
+    preferredDetailApiByDevice.delete(devKey);
+    preferredDetailApiByDevice.set(devKey, apiBase);
+    while (preferredDetailApiByDevice.size > 32) {
+        preferredDetailApiByDevice.delete(preferredDetailApiByDevice.keys().next().value);
+    }
+}
+
+/**
+ * Fetch series episode list and metadata via Medusa v5 signed App detail endpoints.
+ */
+async function fetchAppSeriesDetail(seriesId, options = {}) {
+    const sid = str(seriesId);
+    if (!/^\d{1,30}$/.test(sid)) {
+        throw Object.assign(new Error('剧集编号无效'), { status: 400 });
+    }
+    const rawDeadline = Number(options.deadline) || 0;
+    if (rawDeadline > 0 && rawDeadline <= Date.now()) {
+        throw Object.assign(new Error('App 分集请求超时'), { code: 'ETIMEDOUT' });
+    }
+    const budgetMs = rawDeadline > 0 ? Math.min(12000, rawDeadline - Date.now()) : 12000;
+    const deadline = Date.now() + budgetMs;
+    const timeoutSignal = AbortSignal.timeout(budgetMs);
+    const signal = options.signal ? AbortSignal.any([timeoutSignal, options.signal]) : timeoutSignal;
+
+    const execRequestJson = (url, requestOptions, ...args) => (module.exports.requestJson || requestJson)(
+        url,
+        { ...requestOptions, maxContentLength: 8 * 1024 * 1024, diagnostics: { series_id: sid } },
+        ...args
+    );
+    const checkAborted = () => {
+        if (!signal.aborted) return;
+        if (signal.reason?.name === 'TimeoutError') {
+            throw Object.assign(new Error('App 分集请求超时'), { code: 'ETIMEDOUT' });
+        }
+        throw signal.reason || Object.assign(new Error('App 分集请求已取消'), { code: 'ERR_CANCELED' });
+    };
+
+    const device = await getPlaybackDevice(execRequestJson, signal);
+    const devKey = deviceKey(device);
+    const preferred = preferredDetailApiByDevice.get(devKey);
+    const candidates = preferred && DETAIL_APIS.includes(preferred)
+        ? [preferred, ...DETAIL_APIS.filter(api => api !== preferred)]
+        : DETAIL_APIS;
+
+    const tryDetailEndpoints = async (endpoints) => {
+        let lastError = null;
+        let allEmpty = true;
+        let skipPreload = false;
+        let loggedRetry = false;
+        for (let i = 0; i < endpoints.length; i += 1) {
+            const apiBase = endpoints[i];
+            if (skipPreload && apiBase.includes('/preload/v1')) continue;
+            checkAborted();
+            if (deadline - Date.now() <= 0) break;
+            try {
+                const signed = detailRequest(sid, device, apiBase);
+                const resp = await execRequestJson(
+                    signed.url,
+                    { method: 'POST', headers: signed.headers, data: signed.body },
+                    deadline,
+                    signal
+                );
+                const detail = parseAppSeriesDetail(resp, sid);
+                rememberDetailApi(devKey, apiBase);
+                return { detail, lastError: null, allEmpty: false };
+            } catch (err) {
+                checkAborted();
+                if (err.code === 'BUSINESS_REJECTED') throw err;
+                lastError = err;
+                if (err.code === 'EMPTY_RESPONSE') {
+                    const hasMore = endpoints.slice(i + 1).some(next => !(skipPreload && next.includes('/preload/v1')));
+                    if (hasMore && !loggedRetry) {
+                        loggedRetry = true;
+                        logger.warn('AppSource', '分集详情接口返回空响应，尝试备用节点重试...');
+                    }
+                } else {
+                    allEmpty = false;
+                    if (apiBase.includes('/preload/v1')) skipPreload = true;
+                }
+            }
+        }
+        return { detail: null, lastError, allEmpty };
+    };
+
+    let attempt = await tryDetailEndpoints(candidates);
+    if (!attempt.detail && attempt.allEmpty && device?.created_at
+        && (Date.now() - device.created_at < FRESH_DEVICE_SYNC_WINDOW_MS)
+        && (deadline - Date.now() > FRESH_DEVICE_RETRY_DELAY_MS + 1000)) {
+        logger.info('AppSource', `新设备刚完成注册可能仍在跨集群同步中，等待 ${FRESH_DEVICE_RETRY_DELAY_MS}ms 后重试分集详情接口...`);
+        try {
+            await sleepWithSignal(FRESH_DEVICE_RETRY_DELAY_MS, signal);
+        } catch (err) {
+            checkAborted();
+            throw err;
+        }
+        attempt = await tryDetailEndpoints([DETAIL_APIS[3], DETAIL_APIS[0]]);
+    }
+
+    if (attempt.detail) return attempt.detail;
+    throw attempt.lastError || Object.assign(new Error('App 分集列表为空'), { code: 'MISSING_MODEL' });
+}
+
+module.exports = { fetchAppPlayUrl, fetchAppSeriesDetail, detailRequest, parseAppSeriesDetail, DETAIL_APIS, clearEntryCache, isHevcCodec, signedSearchRequest, signedMetadataRequest, parseSearchInteger, requestJson, playbackRequest, singleVideoModelRequest, shortplayRequest, SEARCH_API, SEARCH_UA };

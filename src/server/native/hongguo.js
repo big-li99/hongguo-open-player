@@ -235,7 +235,10 @@ function parseEpisodeListHtml(html, seriesId) {
   }
   if (!Array.isArray(detail.vid_list)) throw new Error('官网页面未找到分集数据（vid_list）');
   const vids = detail.vid_list.map(String);
-  if (vids.some(vid => !/^\d{1,30}$/.test(vid)) || new Set(vids).size !== vids.length) {
+  if (vids.some(vid => !/^\d{1,30}$/.test(vid))) {
+    throw new Error('官网分集数据异常（非数字分集编号）');
+  }
+  if (new Set(vids).size !== vids.length) {
     throw new Error('官网分集数据异常');
   }
   if (!vids.length) throw new Error('官网分集列表为空');
@@ -506,60 +509,34 @@ async function fetchEpisodeListFromWeb(seriesId, deadline = 0) {
   }
 }
 
+function clearEpisodeCache() {
+  responseCache.clear();
+  pendingRequests.clear();
+}
+
 async function fetchEpisodeListFresh(seriesId, { deadline = 0 } = {}) {
-  let webError;
+  let appError;
+  try {
+    return await require('./app-source').fetchAppSeriesDetail(seriesId, { deadline });
+  } catch (error) {
+    if (error?.status === 400) throw error;
+    appError = error;
+    logger.warn('HongguoNative', `App分集接口获取未命中，回退至官网网页源: seriesId=${seriesId}, 原因: ${error.message}`);
+  }
+
+  if (deadline && Date.now() >= deadline) {
+    const combined = new Error(`获取分集失败：App接口（${appError.message}），官网数据源（加载超时或连接中断）`);
+    if (appError.code) combined.code = appError.code;
+    throw combined;
+  }
+
   try {
     return await fetchEpisodeListFromWeb(seriesId, deadline);
-  } catch (error) {
-    webError = error;
-    logger.warn('HongguoNative', `官网网页分集获取未命中，回退至App备用接口: seriesId=${seriesId}, 原因: ${error.message}`);
+  } catch (webError) {
+    const combined = new Error(`获取分集失败：App接口（${appError.message}），官网数据源（${webError.message}）`);
+    if (appError.code) combined.code = appError.code;
+    throw combined;
   }
-  const body = {
-    biz_param: DETAIL_BIZ_PARAM,
-    dr_scene: "preload",
-    series_id: seriesId,
-  };
-  let j;
-  try {
-    j = await apiCall("/novel/player/multi_video_detail/preload/v1", body, 3, 25000, deadline);
-  } catch (e) {
-    throw new Error(`获取分集失败：官网数据源（${webError.message}），备用接口（${e.message}）`);
-  }
-  if (!j || j.code !== 0) {
-    throw new Error("detail API 失败: " + JSON.stringify(j || {}).slice(0, 200));
-  }
-  const d = j.data || {};
-  const requested = String(seriesId);
-  // Never take the first key from an object: a mismatched response must fail closed.
-  const sid = Object.prototype.hasOwnProperty.call(d, requested) ? requested : '';
-  if (!sid) {
-    throw new Error("备用接口返回的剧集与请求不一致");
-  }
-  const vd = d[sid]?.video_data || {};
-  if (vd.series_id && String(vd.series_id) !== sid) {
-    throw new Error("备用接口返回的剧集与请求不一致");
-  }
-  const vl = vd.video_list || [];
-  if (vl.some(item => item?.series_id && String(item.series_id) !== sid)) {
-    throw new Error("备用接口返回了其他剧集的分集");
-  }
-  const eps = vl.map((item) => ({
-    vid: String(item.vid),
-    vid_index: item.vid_index || 0,
-    title: item.title || '',
-    series_id: String(item.series_id || sid),
-    series_title: vd.series_title || '',
-    cover: vd.series_cover || vd.cover_url || item.cover_url || '',
-  }));
-  if (!eps.length) throw new Error('备用接口分集列表为空');
-  eps.sort((a, b) => a.vid_index - b.vid_index);
-  return {
-    series_id: String(sid),
-    series_title: vd.series_title || '未命名短剧',
-    cover: vd.series_cover || vd.cover_url || (eps[0] && eps[0].cover) || '',
-    total: eps.length,
-    episodes: eps,
-  };
 }
 
 /**
@@ -1226,6 +1203,8 @@ module.exports = {
   resolveSeriesId,
   fetchEpisodeList,
   fetchEpisodeListFromWeb,
+  parseEpisodeListHtml,
+  clearEpisodeCache,
   fetchPlayUrlSingle,
   fetchPlayUrlFromWeb,
   deriveKey,
